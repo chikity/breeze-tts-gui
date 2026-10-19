@@ -97,6 +97,31 @@
   .msg.info { background:color-mix(in srgb,var(--accent) 10%,transparent); color:var(--accent); border:1px solid color-mix(in srgb,var(--accent) 30%,transparent); }
   footer { padding:14px 20px 28px; color:var(--muted); font-size:11.5px; }
   footer code { background:var(--code); padding:1px 5px; border-radius:4px; }
+
+  /* ── recorder + teleprompter ───────────────────────────────── */
+  .tp-head { display:flex; justify-content:space-between; align-items:center; gap:8px;
+             font-size:11.5px; color:var(--muted); margin-bottom:6px; }
+  .tp-tools { display:flex; gap:6px; align-items:center; flex:0 0 auto; }
+  .tp-tools select { width:auto; padding:3px 6px; font-size:11.5px; }
+  .teleprompter {
+    background:var(--field); border:1px solid var(--line); border-radius:8px;
+    padding:12px 14px; font-size:15.5px; line-height:1.75;
+    max-height:180px; overflow:auto; scroll-behavior:smooth;
+    position:relative;   /* so span offsetTop is relative to this box, not the page */
+  }
+  .teleprompter span { transition:background .1s linear, color .1s linear; border-radius:3px; }
+  .teleprompter span.done { color:var(--muted); }
+  .teleprompter span.now { background:var(--accent); color:var(--accent-fg); padding:0 2px; }
+  .rec-row { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
+  .rec-row .muted { font-variant-numeric:tabular-nums; }
+  #recbtn.live, #recbtn.armed { background:var(--err); border-color:var(--err); color:#fff; }
+  .level { display:inline-block; width:64px; height:8px; border-radius:4px; overflow:hidden;
+           background:var(--chip); border:1px solid var(--line); }
+  .level i { display:block; height:100%; width:0%; background:var(--ok); transition:width .06s linear; }
+  .bar { height:5px; border-radius:3px; overflow:hidden; margin-top:8px;
+         background:var(--chip); border:1px solid var(--line); }
+  .bar i { display:block; height:100%; width:0%; background:var(--accent); }
+  .bar i.hot { background:var(--warn); }
 </style>
 </head>
 <body>
@@ -155,14 +180,37 @@
           <div class="row"><select id="savedsel"></select><button id="refresh" style="flex:0 0 auto">↻</button></div>
         </div>
         <label class="srcopt"><input type="radio" name="src" value="upload"> Upload a reference <span class="muted">— voice clone</span></label>
+        <label class="srcopt"><input type="radio" name="src" value="record"> Record a reference <span class="muted">— read a script aloud</span></label>
         <div class="sub-field" id="uploadwrap" style="display:none">
           <div class="drop" id="drop">drop a WAV / FLAC / OGG here, or click to choose</div>
           <input type="file" id="file" accept=".wav,.flac,.ogg,audio/*" hidden>
-          <div class="muted" id="fileinfo" style="margin-top:6px"></div>
-          <div style="margin-top:8px">
-            <label for="reft">Exact transcript of the reference</label>
-            <textarea id="reft" rows="3" placeholder="Every word spoken in the clip, verbatim."></textarea>
+        </div>
+        <div class="sub-field" id="recordwrap" style="display:none">
+          <div class="tp-head">
+            <span>Read this aloud — your transcript is captured for you</span>
+            <span class="tp-tools">
+              <select id="tplang"><option value="en">English</option><option value="zh">中文</option></select>
+              <button id="tpshuffle" title="use a different passage">↻</button>
+            </span>
           </div>
+          <div class="teleprompter" id="tp"></div>
+          <div class="rec-row">
+            <button id="recbtn">● Record</button>
+            <button id="recstop" disabled>■ Stop</button>
+            <span class="muted" id="rectime">0.0 / 28 s</span>
+            <span class="level" title="input level"><i id="levelbar"></i></span>
+          </div>
+          <div class="bar"><i id="recbar"></i></div>
+          <div class="muted" id="recinfo" style="margin-top:6px">
+            Aim for 15–25 s. Quiet room, no music, speak naturally and don't rush.
+          </div>
+          <div id="microw" style="margin-top:6px"></div>
+        </div>
+        <div class="sub-field" id="refwrap" style="display:none">
+          <label for="reft">Exact transcript of the reference <span class="muted">— edit if you deviated</span></label>
+          <textarea id="reft" rows="3" placeholder="Every word spoken in the clip, verbatim."></textarea>
+          <div class="muted" id="fileinfo" style="margin-top:6px"></div>
+          <audio id="refplay" controls style="display:none;margin-top:6px;width:100%"></audio>
         </div>
       </div>
       <div style="margin-top:14px">
@@ -239,6 +287,8 @@ const INSTR_PRESETS = [
 let voices = [];
 let refFile = null;
 let refVoiceId = null;   // registered unnamed voice for the current reference
+let refOrigin = null;    // "upload" | "record" — so a reshuffled script can invalidate a recording
+let refUrl = null;       // object URL for the reference preview
 let currentUrl = null;
 
 /* ── small helpers ─────────────────────────────────────────── */
@@ -309,8 +359,12 @@ function source() {
 }
 document.querySelectorAll('input[name="src"]').forEach((r) => {
   r.addEventListener("change", () => {
-    $("savedwrap").style.display = source() === "saved" ? "" : "none";
-    $("uploadwrap").style.display = source() === "upload" ? "" : "none";
+    const s = source();
+    $("savedwrap").style.display = s === "saved" ? "" : "none";
+    $("uploadwrap").style.display = s === "upload" ? "" : "none";
+    $("recordwrap").style.display = s === "record" ? "" : "none";
+    $("refwrap").style.display = (s === "upload" || s === "record") ? "" : "none";
+    if (s === "record" && refOrigin !== "record" && !$("reft").value.trim()) $("reft").value = passage;
     hide();
   });
 });
@@ -322,9 +376,11 @@ drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.ad
 drop.addEventListener("dragleave", () => drop.classList.remove("over"));
 drop.addEventListener("drop", (e) => {
   e.preventDefault(); drop.classList.remove("over");
-  if (e.dataTransfer.files.length) takeFile(e.dataTransfer.files[0]);
+  if (e.dataTransfer.files.length) { refOrigin = "upload"; takeFile(e.dataTransfer.files[0]); }
 });
-fileInput.addEventListener("change", () => { if (fileInput.files.length) takeFile(fileInput.files[0]); });
+fileInput.addEventListener("change", () => {
+  if (fileInput.files.length) { refOrigin = "upload"; takeFile(fileInput.files[0]); }
+});
 
 function probeDuration(file) {
   return new Promise((res, rej) => {
@@ -349,7 +405,234 @@ async function takeFile(f) {
   if (mb > 25) show("err", "That file is over the 25 MiB limit.");
   else if (dur && isFinite(dur) && dur > 30) show("err", "That clip is over the 30 second limit.");
   else if (dur && isFinite(dur) && dur < 0.1) show("err", "That clip is too short.");
+  previewRef(f);
 }
+
+function previewRef(file) {
+  if (refUrl) URL.revokeObjectURL(refUrl);
+  refUrl = URL.createObjectURL(file);
+  const a = $("refplay");
+  a.src = refUrl;
+  a.style.display = "";
+}
+
+/* ── recorder + teleprompter ───────────────────────────────── */
+// Reading a known script makes the transcript exact by construction, which is the
+// single most common way voice cloning goes wrong. No speech recognition needed:
+// we already know what was said, because we told the speaker what to say.
+const PASSAGES = {
+  en: [
+    "The birch canoe slid on the smooth planks. Glue the sheet to the dark blue background. It's easy to tell the depth of a well. These days a chicken leg is a rare dish. Rice is often served in round bowls.",
+    "A fresh pot of coffee smells wonderful in the morning. She found a quiet corner and opened her book. The old radio still works if you turn the dial slowly. We walked along the river until the light began to fade.",
+    "Please speak clearly and do not rush. The weather turned cold just after sunset. He wrote the number down and checked it twice. Every window in the house was open to the evening breeze.",
+  ],
+  zh: [
+    "今天的天气特别好，我们一起去公园散步吧。路边的树叶已经开始变黄，风一吹就轻轻飘落下来。如果你愿意，我们可以在湖边坐一会儿，慢慢聊聊最近发生的事情。",
+    "清晨的阳光透过窗帘照进来，屋子里一下子亮了起来。她煮了一壶茶，坐在窗边安静地看书。外面偶尔传来几声鸟叫，让人觉得格外放松。",
+  ],
+};
+const MAX_REC_SECONDS = 28;    // the server's hard limit is 30 s
+const MIN_REC_SECONDS = 2;
+const WORDS_PER_SECOND = 2.5;  // a pacing cue for the highlight, not a measurement
+
+let passage = "";
+let tpTokens = [];
+let mediaRecorder = null;
+let recChunks = [];
+let micStream = null;
+let recStart = 0;
+let recTimer = null;
+let levelTimer = null;
+let audioCtx = null;
+
+function pickPassage() {
+  passage = (PASSAGES[$("tplang").value] || PASSAGES.en)[
+    Math.floor(Math.random() * (PASSAGES[$("tplang").value] || PASSAGES.en).length)
+  ];
+  renderTeleprompter();
+  // A new script invalidates a previous take: keeping the old audio with a new
+  // transcript would build a voice from a mismatched pair, which clones badly.
+  if (refOrigin === "record") {
+    refFile = null; refVoiceId = null; refOrigin = null;
+    $("refplay").style.display = "none";
+    $("fileinfo").textContent = "";
+    show("info", "New passage — record again.");
+  }
+  $("reft").value = passage;
+}
+
+function renderTeleprompter() {
+  const zh = $("tplang").value === "zh";
+  tpTokens = zh ? passage.trim().split("") : passage.trim().split(/\s+/);
+  const tp = $("tp");
+  tp.innerHTML = "";
+  tpTokens.forEach((t, i) => {
+    const s = document.createElement("span");
+    s.textContent = t;
+    s.dataset.i = i;
+    tp.appendChild(s);
+    if (!zh) tp.appendChild(document.createTextNode(" "));
+  });
+}
+
+function tpTick(elapsed) {
+  if (!tpTokens.length) return;
+  const est = tpTokens.length / WORDS_PER_SECOND;
+  const idx = Math.min(tpTokens.length - 1, Math.floor((elapsed / est) * tpTokens.length));
+  const tp = $("tp");
+  const was = tp.querySelector("span.now");
+  if (was && was.dataset.i === String(idx)) return;
+  tp.querySelectorAll("span.now").forEach((s) => { s.classList.remove("now"); s.classList.add("done"); });
+  const cur = tp.querySelector('span[data-i="' + idx + '"]');
+  if (cur) {
+    cur.classList.add("now");
+    tp.scrollTo({ top: cur.offsetTop - tp.clientHeight / 2, behavior: "smooth" });
+  }
+}
+
+async function listMics() {
+  if ($("mic")) return;
+  try {
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput");
+    if (devs.length < 2) return;
+    const sel = document.createElement("select");
+    sel.id = "mic";
+    devs.forEach((d, i) => {
+      const o = document.createElement("option");
+      o.value = d.deviceId;
+      o.textContent = d.label || "microphone " + (i + 1);
+      sel.appendChild(o);
+    });
+    $("microw").appendChild(sel);
+  } catch { /* device list is best-effort */ }
+}
+
+async function startRecording() {
+  hide();
+  if (!navigator.mediaDevices?.getUserMedia) {
+    return err("This browser exposes no microphone API. Open the GUI at http://127.0.0.1:8090/ (a secure context).");
+  }
+  if (!window.MediaRecorder) return err("This browser has no MediaRecorder.");
+  const dev = $("mic") ? $("mic").value : null;
+  try {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        ...(dev ? { deviceId: { exact: dev } } : {}),
+        // turn off the speech-processing chain: it is tuned for calls, and its
+        // artifacts are exactly what a reference clip should not contain
+        echoCancellation: false,
+        noiseSuppression: false,
+        autoGainControl: false,
+      },
+    });
+  } catch (e) {
+    return err("Microphone unavailable or blocked: " + e.message);
+  }
+  await listMics();
+
+  recChunks = [];
+  const mime = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"]
+    .find((m) => MediaRecorder.isTypeSupported(m));
+  mediaRecorder = new MediaRecorder(micStream, mime ? { mimeType: mime } : undefined);
+  mediaRecorder.ondataavailable = (e) => { if (e.data.size) recChunks.push(e.data); };
+  mediaRecorder.onstop = finishRecording;
+  mediaRecorder.start();
+  $("recbtn").disabled = true;
+  $("recbtn").classList.add("live");
+  $("recstop").disabled = false;
+
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const src = audioCtx.createMediaStreamSource(micStream);
+    const analyser = audioCtx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    const buf = new Uint8Array(analyser.fftSize);
+    levelTimer = setInterval(() => {
+      analyser.getByteTimeDomainData(buf);
+      let peak = 0;
+      for (let i = 0; i < buf.length; i++) peak = Math.max(peak, Math.abs(buf[i] - 128) / 128);
+      $("levelbar").style.width = Math.min(100, peak * 140) + "%";
+    }, 60);
+  } catch { /* level meter is cosmetic */ }
+
+  recStart = performance.now();
+  recTimer = setInterval(() => {
+    const el = (performance.now() - recStart) / 1000;
+    $("rectime").textContent = el.toFixed(1) + " / " + MAX_REC_SECONDS + " s";
+    $("recbar").style.width = Math.min(100, (el / MAX_REC_SECONDS) * 100) + "%";
+    $("recbar").className = el > MAX_REC_SECONDS * 0.8 ? "hot" : "";
+    tpTick(el);
+    if (el >= MAX_REC_SECONDS) stopRecording();
+  }, 100);
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== "inactive") mediaRecorder.stop();
+  clearInterval(recTimer); recTimer = null;
+  clearInterval(levelTimer); levelTimer = null;
+  $("levelbar").style.width = "0%";
+  if (micStream) { micStream.getTracks().forEach((t) => t.stop()); micStream = null; }
+  $("recbtn").disabled = false;
+  $("recbtn").classList.remove("live");
+  $("recstop").disabled = true;
+}
+
+// The server accepts WAV, FLAC and OGG only -- never the webm/opus that
+// MediaRecorder produces -- so decode and re-encode to 16-bit PCM WAV here.
+function audioBufferToWav(buffer) {
+  const nch = buffer.numberOfChannels, len = buffer.length;
+  const mono = new Float32Array(len);
+  for (let c = 0; c < nch; c++) {
+    const d = buffer.getChannelData(c);
+    for (let i = 0; i < len; i++) mono[i] += d[i] / nch;
+  }
+  const rate = buffer.sampleRate;
+  const ab = new ArrayBuffer(44 + len * 2);
+  const v = new DataView(ab);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + len * 2, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, rate, true); v.setUint32(28, rate * 2, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, len * 2, true);
+  let o = 44;
+  for (let i = 0; i < len; i++) {
+    const s = Math.max(-1, Math.min(1, mono[i]));
+    v.setInt16(o, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    o += 2;
+  }
+  return new Blob([ab], { type: "audio/wav" });
+}
+
+async function finishRecording() {
+  const seconds = (performance.now() - recStart) / 1000;
+  const blob = new Blob(recChunks, { type: (recChunks[0] && recChunks[0].type) || "audio/webm" });
+  recChunks = [];
+  if (!blob.size) return err("Nothing was captured — check the microphone input.");
+  try {
+    const ctx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const decoded = await ctx.decodeAudioData(await blob.arrayBuffer());
+    const wav = audioBufferToWav(decoded);
+    refOrigin = "record";
+    await takeFile(new File([wav], "recorded-reference.wav", { type: "audio/wav" }));
+    $("reft").value = passage;   // exact by construction
+    if (seconds < MIN_REC_SECONDS) {
+      show("err", "Only " + seconds.toFixed(1) + " s captured — aim for 15–25 s for a usable clone.");
+    } else {
+      show("info", "Recorded " + seconds.toFixed(1) + " s at " + decoded.sampleRate +
+        " Hz. Listen back below, then Generate.");
+    }
+  } catch (e) {
+    err("Could not decode the recording: " + e.message);
+  }
+}
+
+$("tplang").onchange = pickPassage;
+$("tpshuffle").onclick = pickPassage;
+$("recbtn").onclick = startRecording;
+$("recstop").onclick = stopRecording;
+pickPassage();
 
 /* ── voice library ─────────────────────────────────────────── */
 async function loadVoices() {
@@ -413,7 +696,7 @@ $("refresh").onclick = loadVoices;
 
 $("vsave").onclick = async () => {
   const name = $("vname").value.trim();
-  if (!refFile || source() !== "upload") return err("Upload a reference first.");
+  if (!refFile || !["upload", "record"].includes(source())) return err("Record or upload a reference first.");
   const rt = $("reft").value.trim();
   if (!rt) return err("The reference transcript is required.");
   if (!name) return err("Pick a name.");

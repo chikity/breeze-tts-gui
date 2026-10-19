@@ -155,6 +155,8 @@ breeze-say "Clone this line." out.wav \
 - **Voice** — `No reference` is voice *design* (pick a voice from a description).
   `Saved voice` reuses something in the library. `Upload a reference` is voice
   *clone*, and needs the reference clip plus its **exact transcript**.
+  `Record a reference` does the same from your microphone, and writes the
+  transcript for you — see below.
 - **Instruction** — optional. Adding one to a reference is what makes it voice
   *direction* rather than a plain clone.
 - **cfg_scale** — `1` is plain. Higher follows the instruction more strongly;
@@ -169,6 +171,42 @@ breeze-say "Clone this line." out.wav \
 ≤ 25 MiB. Clean, non-looping speech with minimal background noise works best.
 `ref_text` must transcribe the clip *verbatim*, including any repeated words —
 getting this wrong is the usual cause of a poor clone.
+
+### Recording a reference
+
+This is the recommended way to make a clone reference, because it removes the step
+people get wrong. Choose **Record a reference** and the GUI shows a passage to read
+aloud. You read it, it records you, and it sets the transcript to *exactly* that
+passage — no transcription, and nothing to mistype. The transcript is correct by
+construction because the GUI already knew what you were going to say.
+
+- Pick **English** or **中文** and `↻` for a different passage. Each is roughly
+  15–20 seconds of speech, long enough to characterise a voice.
+- The highlight moves at a fixed pacing cue (~2.5 words/s). It is a *guide for you*
+  to read along with, not a measurement of what you actually said — nothing is
+  listening or tracking your position. Read naturally; ignore it if it drifts.
+- Watch the level meter. If it barely moves, your input is too quiet and the clone
+  will be poor. Aim for a healthy spread without hitting the end.
+- Recording stops itself at 28 s. The server rejects anything over 30 s. Aim for
+  15–25 s; under about 2 s is not usable and the GUI will say so.
+- Microphone processing (echo cancellation, noise suppression, auto gain) is
+  deliberately **disabled** — that chain is tuned for phone calls, and its
+  artefacts are exactly what a clean reference should not contain.
+- If several input devices exist, a picker appears after the first recording.
+
+**Two caveats.** Recording needs a *secure context*: `http://127.0.0.1:8090/` and
+`http://localhost:8090/` qualify, but if you reach the GUI over a LAN address such
+as `http://192.168.1.20:8090/` the browser will refuse microphone access outright.
+
+And the browser's `MediaRecorder` only produces webm/opus or mp4, neither of which
+the server accepts, so the GUI decodes the take and re-encodes it to 16-bit PCM
+WAV in the page. That is a second-generation encode — harmless in practice, since
+the model's codec tokenises the audio to discrete codes anyway, but if you already
+have a good clean recording, uploading it directly avoids the round trip.
+
+Reshuffling the passage after a take **discards the recording** on purpose: an old
+clip paired with a new transcript would build a voice from mismatched text, which
+clones badly.
 
 ---
 
