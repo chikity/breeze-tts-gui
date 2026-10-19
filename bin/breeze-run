@@ -1,0 +1,38 @@
+#!/usr/bin/env bash
+# Start the Breeze TTS 2 (MLX) server on Apple Silicon.
+#
+# Loopback only, WebSocket off, and CORS narrowed to the GUI's own origin.
+#
+# Deliberately NOT the fork's scripts/start_breeze_mac.sh, which hardcodes
+# --host 0.0.0.0 --cors '*'. Because --cors is nargs="?" with default None,
+# there is no way to disable CORS through that launcher, and CORS '*' would let
+# any web page you browse upload/delete voices and run synthesis.
+#
+# Note on the CORS flag: with CORS off, the server rejects any Origin-bearing
+# *unsafe* request (POST/DELETE) with 403 origin_not_allowed before the endpoint
+# runs. The GUI is served from a different port, so it is a cross-origin client
+# and must be allowlisted here. Allowlisted pages can drive the API; only our
+# GUI is served from those origins. 127.0.0.1 and localhost are SEPARATE origins
+# to a browser, so both are listed.
+#
+# Override with: BREEZE_PORT, BREEZE_GUI_PORT, BREEZE_CORS, BREEZE_REPO,
+#                BREEZE_MODEL
+set -euo pipefail
+
+REPO="${BREEZE_REPO:-$HOME/Github/breeze-tts2-fast-streaming-api}"
+SNAP="${BREEZE_MODEL:-$HOME/.cache/huggingface/hub/models--mlx-community--Breeze-TTS-2-mlx-8bit/snapshots/c6e4a2ff6ab9afba68b7853de802273ffe23fb49}"
+PORT="${BREEZE_PORT:-8080}"
+GUI_PORT="${BREEZE_GUI_PORT:-8090}"
+CORS="${BREEZE_CORS:-http://127.0.0.1:$GUI_PORT,http://localhost:$GUI_PORT}"
+
+[ -d "$SNAP" ] || { echo "breeze-run: model snapshot not found: $SNAP" >&2; exit 1; }
+[ -x "$REPO/.venv/bin/python" ] || { echo "breeze-run: venv missing at $REPO/.venv" >&2; exit 1; }
+
+echo "Breeze TTS 2 (MLX, 8bit) -> http://127.0.0.1:$PORT"
+echo "  loopback only, WebSocket off, CORS: $CORS"
+echo "  GUI: start 'breeze-gui' in another terminal, then open http://127.0.0.1:$GUI_PORT/"
+echo "Ctrl-C to stop."
+
+cd "$REPO"
+exec ./.venv/bin/python -m breeze_infer.api "$SNAP" \
+  --host 127.0.0.1 --port "$PORT" --ws-port disabled --cors="$CORS"

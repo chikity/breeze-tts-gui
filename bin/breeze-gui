@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Serve the Breeze TTS web GUI on loopback and open it in the browser.
+#
+# The GUI is served from its own origin (:8090) and talks to the TTS server on
+# :8080. Start the server first with 'breeze-run', which allowlists this origin.
+#
+# Override with: BREEZE_GUI_DIR, BREEZE_GUI_PORT, BREEZE_API, BREEZE_PY
+set -euo pipefail
+
+GUI_DIR="${BREEZE_GUI_DIR:-$HOME/Github/breeze-tts-gui}"
+PORT="${BREEZE_GUI_PORT:-8090}"
+API="${BREEZE_API:-http://127.0.0.1:8080}"
+PY="${BREEZE_PY:-$HOME/Github/breeze-tts2-fast-streaming-api/.venv/bin/python}"
+
+[ -f "$GUI_DIR/index.html" ] || { echo "breeze-gui: no index.html in $GUI_DIR" >&2; exit 1; }
+[ -x "$PY" ] || { echo "breeze-gui: python not found at $PY" >&2; exit 1; }
+
+if ! curl -sS -m 5 -o /dev/null "$API/health" 2>/dev/null; then
+  echo "breeze-gui: no TTS server answering at $API" >&2
+  echo "            start it first, in another terminal:  breeze-run" >&2
+  exit 1
+fi
+
+URL="http://127.0.0.1:$PORT/"
+echo "Breeze TTS GUI -> $URL"
+echo "  API: $API   (loopback only; Ctrl-C to stop)"
+
+# Open the browser once the server has had a moment to bind.
+( sleep 1; command -v open >/dev/null 2>&1 && open "$URL" || true ) &
+
+exec "$PY" -m http.server "$PORT" --bind 127.0.0.1 --directory "$GUI_DIR"

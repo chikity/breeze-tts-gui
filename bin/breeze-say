@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Synthesize speech with the running Breeze TTS 2 server and write a playable WAV.
+#
+#   breeze-say "Hello there."                                  -> ./out.wav
+#   breeze-say "Hello there." hello.wav
+#   breeze-say "(sigh) Hello again." a.wav -F cfg_scale=2      # stronger delivery
+#   breeze-say "Read this." a.wav -F cfg_scale=4 \
+#       --form-string "instruction=Speak like a calm narrator."   # voice design
+#   breeze-say "Clone this." a.wav \
+#       -F ref_audio=@ref.wav --form-string "ref_text=exact transcript of ref.wav"
+#   breeze-say "Hi." a.wav -F voice_id=alice                   # a saved voice
+#
+# The text is always sent with --form-string, because curl's -F mangles any value
+# starting with "(" -- which is exactly Breeze's vocal-event syntax: (sigh),
+# (laugh), (cough), (clears throat). Using -F for those either 400s or makes the
+# model ramble to the 60s cap.
+#
+# Reference audio rules: WAV/FLAC/OGG, 1-8 channels, 8-192 kHz, <=30s, <=25 MiB.
+# Override with: BREEZE_PORT, BREEZE_PY
+set -euo pipefail
+
+PORT="${BREEZE_PORT:-8080}"
+PY="${BREEZE_PY:-$HOME/Github/breeze-tts2-fast-streaming-api/.venv/bin/python}"
+
+if [ "$#" -lt 1 ]; then
+  echo 'usage: breeze-say "text" [out.wav] [extra curl form args...]' >&2
+  exit 2
+fi
+
+text="$1"; shift
+out="out.wav"
+if [ "$#" -ge 1 ] && [[ "$1" != -* ]]; then
+  out="$1"; shift
+fi
+
+if ! curl -sS -m 5 -o /dev/null "http://127.0.0.1:$PORT/health" 2>/dev/null; then
+  echo "breeze-say: no server on 127.0.0.1:$PORT -- start it with: breeze-run" >&2
+  exit 1
+fi
+
+tmp="$(mktemp -t breeze).pcm"
+trap 'rm -f "$tmp"' EXIT
+
+curl -sS --fail-with-body -X POST "http://127.0.0.1:$PORT/v1/audio/speech" \
+  --form-string "text=$text" "$@" --output "$tmp"
+
+"$PY" - "$tmp" "$out" <<'PY'
+import sys, wave
+src, dst = sys.argv[1], sys.argv[2]
+data = open(src, "rb").read()
+with wave.open(dst, "wb") as w:
+    w.setnchannels(1)
+    w.setsampwidth(2)
+    w.setframerate(24_000)
+    w.writeframes(data)
+print(f"{dst}: {len(data) // 2 / 24_000:.2f}s of audio")
+PY
