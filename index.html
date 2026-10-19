@@ -1,0 +1,588 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Breeze TTS 2</title>
+<!-- inline icon so no /favicon.ico request is ever made -->
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><g fill='%23fff'><rect x='6' y='13' width='3' height='6' rx='1.5'/><rect x='11.5' y='9' width='3' height='14' rx='1.5'/><rect x='17' y='11.5' width='3' height='9' rx='1.5'/><rect x='22.5' y='14' width='3' height='4' rx='1.5'/></g></svg>">
+<style>
+  :root {
+    --bg:#f6f7f9; --panel:#fff; --fg:#15181d; --muted:#6b7280; --line:#e3e6ea;
+    --accent:#2563eb; --accent-fg:#fff; --ok:#16a34a; --warn:#b45309; --err:#dc2626;
+    --field:#fff; --chip:#f1f3f5; --code:#f6f8fa; --radius:10px;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg:#101216; --panel:#171a1f; --fg:#e8eaed; --muted:#9aa2ad; --line:#282d34;
+      --accent:#3b82f6; --accent-fg:#fff; --ok:#22c55e; --warn:#f59e0b; --err:#f87171;
+      --field:#1e2228; --chip:#22272e; --code:#14181d;
+    }
+  }
+  * { box-sizing:border-box; }
+  body {
+    margin:0; background:var(--bg); color:var(--fg);
+    font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+  }
+  header {
+    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
+    padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel);
+  }
+  header h1 { font-size:15px; margin:0; letter-spacing:-.01em; }
+  header .sub { color:var(--muted); font-size:12px; }
+  .pill {
+    margin-left:auto; display:inline-flex; align-items:center; gap:7px;
+    font-size:12px; padding:4px 11px; border-radius:999px;
+    border:1px solid var(--line); background:var(--chip); color:var(--muted);
+  }
+  .dot { width:7px; height:7px; border-radius:50%; background:var(--muted); }
+  .dot.ok { background:var(--ok); } .dot.err { background:var(--err); }
+  main { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:16px; padding:16px 20px 0; align-items:start; }
+  @media (max-width:900px) { main { grid-template-columns:1fr; } }
+  section.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:14px; }
+  .panel + .panel { margin-top:16px; }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:0 0 10px; font-weight:600; }
+  label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
+  textarea, input[type=text], input[type=number], select {
+    width:100%; font:inherit; color:var(--fg); background:var(--field);
+    border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+  }
+  textarea { resize:vertical; line-height:1.55; }
+  textarea:focus, input:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px; border-color:var(--accent); }
+  .row { display:flex; gap:10px; align-items:flex-end; }
+  .row > * { flex:1; min-width:0; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  button {
+    font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--chip);
+    color:var(--fg); border-radius:8px; padding:5px 10px;
+  }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  button.primary {
+    background:var(--accent); color:var(--accent-fg); border-color:var(--accent);
+    padding:10px 18px; font-weight:600;
+  }
+  .muted { color:var(--muted); font-size:12px; }
+  .sources { display:flex; flex-direction:column; gap:8px; }
+  .srcopt { display:flex; align-items:center; gap:8px; font-size:13px; }
+  .srcopt input { width:auto; margin:0; }
+  .sub-field { margin:8px 0 0 24px; }
+  .drop {
+    border:1px dashed var(--line); border-radius:8px; padding:14px; text-align:center;
+    color:var(--muted); font-size:12px; cursor:pointer; background:var(--field);
+  }
+  .drop.over { border-color:var(--accent); color:var(--accent); }
+  details { margin-top:10px; }
+  summary { cursor:pointer; font-size:12px; color:var(--muted); user-select:none; }
+  .adv { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
+  .adv label { margin-bottom:3px; }
+  input[type=range] { width:100%; accent-color:var(--accent); }
+  .stat { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; }
+  .stat div { font-size:12px; color:var(--muted); }
+  .stat b { display:block; font-size:15px; color:var(--fg); font-variant-numeric:tabular-nums; }
+  audio { width:100%; margin-top:10px; }
+  pre {
+    background:var(--code); border:1px solid var(--line); border-radius:8px;
+    padding:10px; overflow:auto; font-size:11.5px; line-height:1.5; margin:8px 0 0;
+    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word;
+  }
+  table { width:100%; border-collapse:collapse; font-size:12.5px; }
+  th { text-align:left; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; padding:0 8px 6px 0; }
+  td { padding:7px 8px 7px 0; border-top:1px solid var(--line); vertical-align:middle; }
+  td.trunc { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+  .badge { font-size:10.5px; padding:2px 7px; border-radius:999px; background:var(--chip); color:var(--muted); border:1px solid var(--line); }
+  .msg { margin-top:10px; font-size:12.5px; padding:9px 11px; border-radius:8px; display:none; }
+  .msg.show { display:block; }
+  .msg.err { background:color-mix(in srgb,var(--err) 12%,transparent); color:var(--err); border:1px solid color-mix(in srgb,var(--err) 35%,transparent); }
+  .msg.info { background:color-mix(in srgb,var(--accent) 10%,transparent); color:var(--accent); border:1px solid color-mix(in srgb,var(--accent) 30%,transparent); }
+  footer { padding:14px 20px 28px; color:var(--muted); font-size:11.5px; }
+  footer code { background:var(--code); padding:1px 5px; border-radius:4px; }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>Breeze TTS 2</h1>
+  <span class="sub">Apple Silicon · MLX</span>
+  <span class="pill" id="pill"><span class="dot" id="dot"></span><span id="pilltext">checking…</span></span>
+</header>
+
+<main>
+  <!-- ── SCRIPT ─────────────────────────────────────────────── -->
+  <div>
+    <section class="panel">
+      <h2>Script</h2>
+      <textarea id="text" rows="7" placeholder="Type what you want spoken…"></textarea>
+      <div class="row" style="margin-top:8px">
+        <span class="muted" id="counter">0 / 10000</span>
+        <span class="muted" style="text-align:right">click to insert a vocal event</span>
+      </div>
+      <div class="chips" id="events"></div>
+      <div class="chips" id="presets"></div>
+    </section>
+
+    <section class="panel">
+      <h2>Output</h2>
+      <div class="row">
+        <button class="primary" id="go">Generate</button>
+        <button id="save" disabled>Download WAV</button>
+      </div>
+      <div class="muted" style="margin-top:6px">⌘↵ to generate · one request at a time</div>
+      <div class="msg" id="msg"></div>
+      <audio id="player" controls preload="none"></audio>
+      <div class="stat">
+        <div>first audio<b id="s-ttfa">—</b></div>
+        <div>audio length<b id="s-len">—</b></div>
+        <div>generated in<b id="s-gen">—</b></div>
+        <div>real-time factor<b id="s-rtf">—</b></div>
+      </div>
+      <details>
+        <summary>reproduce with curl</summary>
+        <pre id="curl">generate something first</pre>
+        <div class="chips"><button id="copycurl">Copy</button></div>
+      </details>
+    </section>
+  </div>
+
+  <!-- ── VOICE + DELIVERY ───────────────────────────────────── -->
+  <div>
+    <section class="panel">
+      <h2>Voice</h2>
+      <div class="sources">
+        <label class="srcopt"><input type="radio" name="src" value="none" checked> No reference <span class="muted">— voice design</span></label>
+        <label class="srcopt"><input type="radio" name="src" value="saved"> Saved voice</label>
+        <div class="sub-field" id="savedwrap" style="display:none">
+          <div class="row"><select id="savedsel"></select><button id="refresh" style="flex:0 0 auto">↻</button></div>
+        </div>
+        <label class="srcopt"><input type="radio" name="src" value="upload"> Upload a reference <span class="muted">— voice clone</span></label>
+        <div class="sub-field" id="uploadwrap" style="display:none">
+          <div class="drop" id="drop">drop a WAV / FLAC / OGG here, or click to choose</div>
+          <input type="file" id="file" accept=".wav,.flac,.ogg,audio/*" hidden>
+          <div class="muted" id="fileinfo" style="margin-top:6px"></div>
+          <div style="margin-top:8px">
+            <label for="reft">Exact transcript of the reference</label>
+            <textarea id="reft" rows="3" placeholder="Every word spoken in the clip, verbatim."></textarea>
+          </div>
+        </div>
+      </div>
+      <div style="margin-top:14px">
+        <label for="instr">Instruction <span class="muted">— optional; adds voice direction</span></label>
+        <textarea id="instr" rows="3" placeholder="e.g. Speak slowly with a restrained, serious tone."></textarea>
+        <div class="chips" id="instrpresets"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Delivery</h2>
+      <label for="cfg">Instruction strength (cfg_scale) — <span id="cfgval">1.0</span></label>
+      <input type="range" id="cfg" min="1" max="4" step="0.5" value="1">
+      <div class="muted" style="margin-top:4px">
+        1 = plain. Higher follows the instruction more strongly. Voice design and direction usually want 2–4.
+      </div>
+      <div class="row" style="margin-top:12px">
+        <div><label for="seed">Seed</label><input type="text" id="seed" value="42"></div>
+        <button id="dice" style="flex:0 0 auto">🎲</button>
+      </div>
+      <details>
+        <summary>advanced sampling</summary>
+        <div class="adv">
+          <div><label for="temperature">temperature</label><input type="number" id="temperature" step="0.05" min="0" max="10" placeholder="default"></div>
+          <div><label for="topk">top_k</label><input type="number" id="topk" step="1" min="0" max="10000" placeholder="default"></div>
+          <div><label for="topp">top_p</label><input type="number" id="topp" step="0.05" min="0" max="1" placeholder="default"></div>
+          <div><label for="reppen">repetition_penalty</label><input type="number" id="reppen" step="0.05" min="0" max="10" placeholder="default"></div>
+          <div><label for="maxtok">max_new_tokens</label><input type="number" id="maxtok" step="1" min="0" max="1500" placeholder="default"></div>
+          <div><label for="splitchars">split_chars</label><input type="number" id="splitchars" step="1" min="0" max="10000" placeholder="default"></div>
+        </div>
+      </details>
+    </section>
+  </div>
+</main>
+
+<section class="panel" style="margin:16px 20px 0">
+  <h2>Voice library</h2>
+  <table>
+    <thead><tr><th>id</th><th>length</th><th>kind</th><th>transcript</th><th></th></tr></thead>
+    <tbody id="vrows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+  </table>
+  <div class="row" style="margin-top:12px">
+    <div><label for="vname">Save the current reference as a named voice</label><input type="text" id="vname" placeholder="alice"></div>
+    <button id="vsave" style="flex:0 0 auto">Save voice</button>
+  </div>
+  <div class="muted" style="margin-top:6px">Letters, digits, dash and underscore. Named voices persist across restarts; unnamed (v_…) ones live in memory.</div>
+</section>
+
+<footer>
+  Talks to the Breeze TTS server on <code id="apishow"></code>. Loopback only, no authentication.
+  Model weights are research / non-commercial use only.
+</footer>
+
+<script>
+"use strict";
+
+const API = (new URLSearchParams(location.search).get("api") || "http://127.0.0.1:8080").replace(/\/+$/, "");
+const $ = (id) => document.getElementById(id);
+
+const EN_EVENTS = ["(sigh)", "(laugh)", "(cough)", "(clears throat)"];
+const ZH_EVENTS = ["[叹气]", "[笑]", "[咳嗽]", "[清嗓子]"];
+const PROMPTS = [
+  "The birch canoe slid on the smooth planks. Glue the sheet to the dark blue background.",
+  "It's easy to tell the depth of a well. These days a chicken leg is a rare dish.",
+  "Rice is often served in round bowls. The juice of lemons makes fine punch.",
+];
+const INSTR_PRESETS = [
+  "Speak warmly and gently, with a soft smile in the voice.",
+  "Speak in a restrained, serious, matter-of-fact tone.",
+  "Speak playfully, with a teasing, amused lilt.",
+  "Whisper softly and intimately.",
+];
+
+let voices = [];
+let refFile = null;
+let refVoiceId = null;   // registered unnamed voice for the current reference
+let currentUrl = null;
+
+/* ── small helpers ─────────────────────────────────────────── */
+function show(kind, text) {
+  const m = $("msg");
+  m.className = "msg show " + kind;
+  m.textContent = text;
+}
+function hide() { $("msg").className = "msg"; }
+function err(e) { show("err", String(e && e.message ? e.message : e)); }
+
+async function apiErr(r) {
+  try { const j = await r.json(); return j.error || r.status; }
+  catch { return "HTTP " + r.status; }
+}
+
+function insertAtCursor(ta, s) {
+  ta.setRangeText(s, ta.selectionStart, ta.selectionEnd, "end");
+  ta.focus();
+}
+
+/* ── health ────────────────────────────────────────────────── */
+async function health() {
+  try {
+    const r = await fetch(API + "/health");
+    if (!r.ok) throw new Error(await apiErr(r));
+    const j = await r.json();
+    $("dot").className = "dot ok";
+    $("pilltext").textContent = "ready · " + j.sample_rate + " Hz";
+  } catch {
+    $("dot").className = "dot err";
+    $("pilltext").textContent = "server not reachable";
+  }
+}
+$("apishow").textContent = API;
+
+/* ── textarea plumbing ─────────────────────────────────────── */
+const textEl = $("text");
+function count() { $("counter").textContent = textEl.value.length + " / 10000"; }
+textEl.addEventListener("input", count);
+count();
+
+for (const ev of [...EN_EVENTS, ...ZH_EVENTS]) {
+  const b = document.createElement("button");
+  b.textContent = ev;
+  b.onclick = () => insertAtCursor(textEl, ev + " ");
+  $("events").appendChild(b);
+}
+PROMPTS.forEach((p, i) => {
+  const b = document.createElement("button");
+  b.textContent = "preset " + (i + 1);
+  b.title = p;
+  b.onclick = () => { textEl.value = p; count(); };
+  $("presets").appendChild(b);
+});
+const instrEl = $("instr");
+INSTR_PRESETS.forEach((p) => {
+  const b = document.createElement("button");
+  b.textContent = p.length > 34 ? p.slice(0, 32) + "…" : p;
+  b.title = p;
+  b.onclick = () => { instrEl.value = p; };
+  $("instrpresets").appendChild(b);
+});
+
+/* ── voice source ──────────────────────────────────────────── */
+function source() {
+  return document.querySelector('input[name="src"]:checked').value;
+}
+document.querySelectorAll('input[name="src"]').forEach((r) => {
+  r.addEventListener("change", () => {
+    $("savedwrap").style.display = source() === "saved" ? "" : "none";
+    $("uploadwrap").style.display = source() === "upload" ? "" : "none";
+    hide();
+  });
+});
+
+/* ── reference file ────────────────────────────────────────── */
+const drop = $("drop"), fileInput = $("file");
+drop.onclick = () => fileInput.click();
+drop.addEventListener("dragover", (e) => { e.preventDefault(); drop.classList.add("over"); });
+drop.addEventListener("dragleave", () => drop.classList.remove("over"));
+drop.addEventListener("drop", (e) => {
+  e.preventDefault(); drop.classList.remove("over");
+  if (e.dataTransfer.files.length) takeFile(e.dataTransfer.files[0]);
+});
+fileInput.addEventListener("change", () => { if (fileInput.files.length) takeFile(fileInput.files[0]); });
+
+function probeDuration(file) {
+  return new Promise((res, rej) => {
+    const u = URL.createObjectURL(file), a = new Audio();
+    a.preload = "metadata";
+    a.onloadedmetadata = () => { URL.revokeObjectURL(u); res(a.duration); };
+    a.onerror = () => { URL.revokeObjectURL(u); rej(new Error("that file isn't audio the browser can read")); };
+    a.src = u;
+  });
+}
+
+async function takeFile(f) {
+  hide();
+  refVoiceId = null;
+  refFile = f;
+  const mb = f.size / 1048576;
+  let dur = null;
+  try { dur = await probeDuration(f); } catch (e) { err(e); }
+  const bits = [f.name, mb.toFixed(1) + " MB"];
+  if (dur && isFinite(dur)) bits.push(dur.toFixed(1) + " s");
+  $("fileinfo").textContent = bits.join(" · ");
+  if (mb > 25) show("err", "That file is over the 25 MiB limit.");
+  else if (dur && isFinite(dur) && dur > 30) show("err", "That clip is over the 30 second limit.");
+  else if (dur && isFinite(dur) && dur < 0.1) show("err", "That clip is too short.");
+}
+
+/* ── voice library ─────────────────────────────────────────── */
+async function loadVoices() {
+  try {
+    const r = await fetch(API + "/v1/voices");
+    if (!r.ok) throw new Error(await apiErr(r));
+    voices = await r.json();
+  } catch { voices = []; }
+  const sel = $("savedsel"), keep = sel.value;
+  sel.innerHTML = "";
+  for (const v of voices) {
+    const o = document.createElement("option");
+    o.value = v.id;
+    o.textContent = v.id + (v.saved ? "" : " (memory)");
+    sel.appendChild(o);
+  }
+  if (keep) sel.value = keep;
+  const tb = $("vrows");
+  tb.innerHTML = "";
+  if (!voices.length) {
+    tb.innerHTML = '<tr><td colspan="5" class="muted">no voices yet — upload a reference and save it</td></tr>';
+    return;
+  }
+  for (const v of voices) {
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      "<td><b>" + esc(v.id) + "</b></td>" +
+      "<td>" + (v.seconds != null ? v.seconds.toFixed(2) + " s" : "—") + "</td>" +
+      '<td><span class="badge">' + (v.saved ? "saved" : "memory") + "</span></td>" +
+      '<td class="trunc" title="' + esc(v.ref_text || "") + '">' + esc(v.ref_text || "") + "</td>" +
+      "<td></td>";
+    const use = document.createElement("button");
+    use.textContent = "use";
+    use.onclick = () => {
+      document.querySelector('input[name="src"][value="saved"]').checked = true;
+      document.querySelector('input[name="src"][value="saved"]').dispatchEvent(new Event("change"));
+      $("savedsel").value = v.id;
+      show("info", "Using saved voice “" + v.id + "”.");
+    };
+    const del = document.createElement("button");
+    del.textContent = "delete";
+    del.style.marginLeft = "6px";
+    del.onclick = async () => {
+      try {
+        const r = await fetch(API + "/v1/voices/" + encodeURIComponent(v.id), { method: "DELETE" });
+        if (!r.ok) throw new Error(await apiErr(r));
+        await loadVoices();
+        show("info", "Deleted “" + v.id + "”.");
+      } catch (e) { err(e); }
+    };
+    const td = tr.lastElementChild;
+    td.appendChild(use); td.appendChild(del);
+    tb.appendChild(tr);
+  }
+}
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+$("refresh").onclick = loadVoices;
+
+$("vsave").onclick = async () => {
+  const name = $("vname").value.trim();
+  if (!refFile || source() !== "upload") return err("Upload a reference first.");
+  const rt = $("reft").value.trim();
+  if (!rt) return err("The reference transcript is required.");
+  if (!name) return err("Pick a name.");
+  try {
+    const fd = new FormData();
+    fd.append("ref_audio", refFile, refFile.name);
+    fd.append("ref_text", rt);
+    fd.append("name", name);
+    const r = await fetch(API + "/v1/voices", { method: "POST", body: fd });
+    if (!r.ok) throw new Error(await apiErr(r));
+    await loadVoices();
+    show("info", "Saved voice “" + name + "”.");
+  } catch (e) { err(e); }
+};
+
+/* ── build + play ──────────────────────────────────────────── */
+function buildParams() {
+  const p = new URLSearchParams();
+  p.set("text", textEl.value.trim());
+  const ins = instrEl.value.trim();
+  if (ins) p.set("instruction", ins);
+  p.set("cfg_scale", $("cfg").value);
+  p.set("seed", $("seed").value.trim() || "42");
+  for (const [id, key] of [["temperature","temperature"],["topk","top_k"],["topp","top_p"],
+                           ["reppen","repetition_penalty"],["maxtok","max_new_tokens"],["splitchars","split_chars"]]) {
+    const v = $(id).value.trim();
+    if (v !== "") p.set(key, v);
+  }
+  return p;
+}
+
+async function ensureRefVoice() {
+  if (!refFile) throw new Error("Choose a reference file.");
+  if (refVoiceId) return refVoiceId;
+  const rt = $("reft").value.trim();
+  if (!rt) throw new Error("The reference transcript is required with a reference clip.");
+  const fd = new FormData();
+  fd.append("ref_audio", refFile, refFile.name);
+  fd.append("ref_text", rt);
+  const r = await fetch(API + "/v1/voices", { method: "POST", body: fd });
+  if (!r.ok) throw new Error(await apiErr(r));
+  refVoiceId = (await r.json()).id;
+  return refVoiceId;
+}
+
+function shellQuote(s) { return "'" + String(s).replace(/'/g, "'\\''") + "'"; }
+
+function buildCurl(url, usesRef) {
+  const q = new URL(url).searchParams;
+  q.delete("_");
+  const lines = ["curl -G " + shellQuote(API + "/v1/audio/speech.wav") + " \\"];
+  q.forEach((v, k) => lines.push("  --data-urlencode " + shellQuote(k + "=" + v) + " \\"));
+  lines.push("  --output out.wav");
+  const body = lines.join("\n");
+  if (usesRef) {
+    return "# 1. register the reference clip once, then reuse its voice_id:\n" +
+      "curl -s -X POST " + shellQuote(API + "/v1/voices") +
+      " -F 'ref_audio=@reference.wav' --form-string 'ref_text=EXACT TRANSCRIPT' | tee /tmp/v.json\n\n" +
+      "# 2. synthesize with it:\n" + body;
+  }
+  return body;
+}
+
+let t0 = 0, ttfa = null, lastProgress = 0, genTimer = null, activeUrl = null;
+const player = $("player");
+
+function resetStats() {
+  $("s-ttfa").textContent = "—"; $("s-len").textContent = "—";
+  $("s-gen").textContent = "—"; $("s-rtf").textContent = "—";
+}
+function bufferedEnd() {
+  try { return player.buffered.length ? player.buffered.end(player.buffered.length - 1) : 0; }
+  catch { return 0; }
+}
+// "first audio" = time until the first audio bytes arrive, which is the number the
+// model advertises (~200 ms). Waiting for the `playing` event instead would fold in
+// browser audio-device startup, which can add a second or more and says nothing
+// about the server. `playing` stays as a fallback.
+function markFirstAudio() {
+  if (ttfa === null && t0) {
+    ttfa = performance.now() - t0;
+    $("s-ttfa").textContent = Math.round(ttfa) + " ms";
+  }
+}
+player.addEventListener("progress", () => {
+  lastProgress = performance.now();
+  if (bufferedEnd() > 0) markFirstAudio();
+});
+player.addEventListener("playing", markFirstAudio);
+player.addEventListener("error", async () => {
+  if (!activeUrl) return;
+  stopTimer();
+  $("go").disabled = false;
+  try {
+    const r = await fetch(activeUrl);          // the failure returns immediately; no generation
+    show("err", "Server rejected the request: " + (await apiErr(r)));
+  } catch {
+    show("err", "Playback failed and the reason could not be read. Check the server terminal.");
+  }
+});
+player.addEventListener("ended", () => { stopTimer(); finish(); });
+
+function stopTimer() { if (genTimer) { clearInterval(genTimer); genTimer = null; } }
+function finish() {
+  const len = player.duration && isFinite(player.duration) && player.duration > 0
+    ? player.duration : bufferedEnd();
+  if (len > 0) $("s-len").textContent = len.toFixed(2) + " s";
+  if (t0 && lastProgress > t0) {
+    const gen = (lastProgress - t0) / 1000;
+    $("s-gen").textContent = gen.toFixed(2) + " s";
+    if (len > 0) $("s-rtf").textContent = (gen / len).toFixed(2);
+  }
+  $("go").disabled = false;
+}
+
+async function generate() {
+  if ($("go").disabled) return;
+  hide(); resetStats();
+  if (!textEl.value.trim()) return err("Enter some text to speak.");
+  $("go").disabled = true;
+  try {
+    const p = buildParams();
+    let usesRef = false;
+    if (source() === "saved") {
+      const id = $("savedsel").value;
+      if (!id) throw new Error("No saved voice selected.");
+      p.set("voice_id", id); usesRef = true;
+    } else if (source() === "upload") {
+      p.set("voice_id", await ensureRefVoice()); usesRef = true;
+    }
+    const url = API + "/v1/audio/speech.wav?" + p.toString() + "&_=" + Date.now();
+    $("curl").textContent = buildCurl(url, usesRef);
+    activeUrl = url;
+    t0 = performance.now(); ttfa = null; lastProgress = 0;
+    player.src = url; player.load();
+    try { await player.play(); } catch { /* autoplay may need the click we already had */ }
+    stopTimer();
+    genTimer = setInterval(() => {
+      if (lastProgress && performance.now() - lastProgress > 400) { stopTimer(); finish(); }
+    }, 200);
+  } catch (e) {
+    $("go").disabled = false;
+    err(e);
+  }
+}
+
+$("go").onclick = generate;
+$("save").onclick = () => {
+  if (!currentUrl) return;
+  const a = document.createElement("a");
+  a.href = currentUrl; a.download = "breeze.wav"; a.click();
+};
+$("copycurl").onclick = async () => {
+  try { await navigator.clipboard.writeText($("curl").textContent); show("info", "Copied."); }
+  catch { err("Clipboard blocked; select the text manually."); }
+};
+$("cfg").addEventListener("input", () => { $("cfgval").textContent = parseFloat($("cfg").value).toFixed(1); });
+$("dice").onclick = () => { $("seed").value = Math.floor(Math.random() * 4294967295); };
+document.addEventListener("keydown", (e) => {
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); generate(); }
+});
+
+// keep the download target in step with the player's source
+new MutationObserver(() => {
+  if (player.src && player.src.startsWith("http")) { currentUrl = player.src; $("save").disabled = false; }
+}).observe(player, { attributes: true, attributeFilter: ["src"] });
+
+health(); loadVoices();
+setInterval(health, 15000);
+</script>
+</body>
+</html>
