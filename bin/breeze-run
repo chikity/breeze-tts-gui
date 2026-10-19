@@ -17,21 +17,22 @@
 #
 # BREEZE_PRECISION picks the weights and the matching speed settings:
 #
-#   8bit   (default) mlx-community/Breeze-TTS-2-mlx-8bit. Backbone AND depth
-#                    decoder are mxfp8. Fastest to download, smallest memory,
-#                    and the lowest fidelity of the three -- it is the only one
-#                    that quantizes the backbone, which is where prosody and
-#                    voice direction live, and CFG amplifies that error.
-#   mixed            bf16 weights with the depth decoder quantized to int8 at
-#                    load. Backbone stays bit-exact. Best latency/fidelity
-#                    trade: the depth decoder runs 15x per frame, so that is
-#                    where quantization buys speed with ~no quality cost.
-#   bf16             No quantization at all. The quality ceiling, and the
-#                    slowest -- may not keep up with playback in real time.
+#   mixed  (default) bf16 weights with the depth decoder quantized to int8 at
+#                    load. The backbone stays bit-exact, which is the part that
+#                    matters: it sets prosody and is where a voice direction
+#                    lands, and CFG amplifies its error. Measured on an M5 Pro:
+#                    ~126-158 ms first audio, RTF 0.54-0.58, 8.2 GB.
+#   bf16             No quantization at all. Same backbone fidelity as mixed,
+#                    only the depth decoder differs -- which the fork author's
+#                    blind test could not tell apart -- for ~45% more time
+#                    (RTF ~0.78) and slightly more memory.
+#   8bit             mxfp8 backbone AND depth decoder. The fastest (RTF ~0.48)
+#                    and smallest (5.7 GB), but the only one that quantizes the
+#                    backbone. NOT DOWNLOADED BY DEFAULT -- see below.
 #
-# BREEZE_MLX_CACHE_GB matters more than people expect: MLX keeps freed buffers
-# by default, so an uncapped bf16 run grows from ~9 GB toward ~15 GB. All three
-# profiles here cap it at 1 GB unless you override it.
+# Every profile caps MLX's buffer cache at 1 GB. That matters more than people
+# expect: MLX keeps freed buffers by default, so an uncapped run grows from
+# ~9 GB toward ~15 GB. Override with BREEZE_MLX_CACHE_GB.
 #
 # Override anything with: BREEZE_PRECISION, BREEZE_MLX_QUANT, BREEZE_MLX_COMPILE,
 # BREEZE_MLX_FAST_FIRST, BREEZE_MLX_CACHE_GB, BREEZE_MLX_GROUP, BREEZE_CHUNKS,
@@ -43,15 +44,20 @@ HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
 PORT="${BREEZE_PORT:-8080}"
 GUI_PORT="${BREEZE_GUI_PORT:-8090}"
 CORS="${BREEZE_CORS:-http://127.0.0.1:$GUI_PORT,http://localhost:$GUI_PORT}"
-PRECISION="${BREEZE_PRECISION:-8bit}"
+PRECISION="${BREEZE_PRECISION:-mixed}"
+
+BF16_REPO="mlx-community/Breeze-TTS-2-mlx"
+BF16_REV="3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+BIT8_REPO="mlx-community/Breeze-TTS-2-mlx-8bit"
+BIT8_REV="c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
+
+# Hugging Face names a cache directory after the repo with '/' replaced by '--'
+# (models--mlx-community--Breeze-TTS-2-mlx). Derive it rather than hand-writing it.
+hub_dir() { printf 'models--%s' "$(printf '%s' "$1" | sed 's|/|--|g')"; }
 
 case "$PRECISION" in
-  8bit)
-    DEFAULT_SNAP="$HUB/models--mlx-community--Breeze-TTS-2-mlx-8bit/snapshots/c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
-    CHUNKS=""
-    ;;
   mixed)
-    DEFAULT_SNAP="$HUB/models--mlx-community--Breeze-TTS-2-mlx/snapshots/3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+    DL_REPO="$BF16_REPO"; DL_REV="$BF16_REV"
     export BREEZE_MLX_QUANT="${BREEZE_MLX_QUANT-depth:8}"
     export BREEZE_MLX_COMPILE="${BREEZE_MLX_COMPILE-1}"
     export BREEZE_MLX_FAST_FIRST="${BREEZE_MLX_FAST_FIRST-6}"
@@ -59,30 +65,31 @@ case "$PRECISION" in
     CHUNKS="--chunk-first 1 --chunk-max 1"
     ;;
   bf16)
-    DEFAULT_SNAP="$HUB/models--mlx-community--Breeze-TTS-2-mlx/snapshots/3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+    DL_REPO="$BF16_REPO"; DL_REV="$BF16_REV"
     export BREEZE_MLX_COMPILE="${BREEZE_MLX_COMPILE-1}"
     export BREEZE_MLX_FAST_FIRST="${BREEZE_MLX_FAST_FIRST-6}"
     export BREEZE_MLX_CACHE_GB="${BREEZE_MLX_CACHE_GB-1}"
-    # Full precision is the slowest build; large chunks starve playback, so keep
-    # them small. Raise --chunk-max if this machine turns out to have headroom.
+    # Slowest build; wide chunks starve playback, so keep them small.
     CHUNKS="--chunk-first 1 --chunk-max 4"
     ;;
+  8bit)
+    DL_REPO="$BIT8_REPO"; DL_REV="$BIT8_REV"
+    CHUNKS=""
+    ;;
   *)
-    echo "breeze-run: BREEZE_PRECISION must be 8bit, mixed or bf16 (got '$PRECISION')" >&2
+    echo "breeze-run: BREEZE_PRECISION must be mixed, bf16 or 8bit (got '$PRECISION')" >&2
     exit 2
     ;;
 esac
 
+DEFAULT_SNAP="$HUB/$(hub_dir "$DL_REPO")/snapshots/$DL_REV"
 SNAP="${BREEZE_MODEL:-$DEFAULT_SNAP}"
 CHUNKS="${BREEZE_CHUNKS:-$CHUNKS}"
 
 if [ ! -d "$SNAP" ]; then
   echo "breeze-run: no $PRECISION weights at $SNAP" >&2
-  if [ "$PRECISION" != "8bit" ]; then
-    echo "            download them with:" >&2
-    echo "            HF_XET_FIXED_DOWNLOAD_CONCURRENCY=4 hf download \\" >&2
-    echo "              mlx-community/Breeze-TTS-2-mlx --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8" >&2
-  fi
+  echo "            download them with:" >&2
+  echo "            HF_XET_FIXED_DOWNLOAD_CONCURRENCY=4 hf download $DL_REPO --revision $DL_REV" >&2
   exit 1
 fi
 [ -x "$REPO/.venv/bin/python" ] || { echo "breeze-run: venv missing at $REPO/.venv" >&2; exit 1; }
