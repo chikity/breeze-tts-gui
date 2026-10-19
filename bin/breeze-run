@@ -15,24 +15,88 @@
 # GUI is served from those origins. 127.0.0.1 and localhost are SEPARATE origins
 # to a browser, so both are listed.
 #
-# Override with: BREEZE_PORT, BREEZE_GUI_PORT, BREEZE_CORS, BREEZE_REPO,
-#                BREEZE_MODEL
+# BREEZE_PRECISION picks the weights and the matching speed settings:
+#
+#   8bit   (default) mlx-community/Breeze-TTS-2-mlx-8bit. Backbone AND depth
+#                    decoder are mxfp8. Fastest to download, smallest memory,
+#                    and the lowest fidelity of the three -- it is the only one
+#                    that quantizes the backbone, which is where prosody and
+#                    voice direction live, and CFG amplifies that error.
+#   mixed            bf16 weights with the depth decoder quantized to int8 at
+#                    load. Backbone stays bit-exact. Best latency/fidelity
+#                    trade: the depth decoder runs 15x per frame, so that is
+#                    where quantization buys speed with ~no quality cost.
+#   bf16             No quantization at all. The quality ceiling, and the
+#                    slowest -- may not keep up with playback in real time.
+#
+# BREEZE_MLX_CACHE_GB matters more than people expect: MLX keeps freed buffers
+# by default, so an uncapped bf16 run grows from ~9 GB toward ~15 GB. All three
+# profiles here cap it at 1 GB unless you override it.
+#
+# Override anything with: BREEZE_PRECISION, BREEZE_MLX_QUANT, BREEZE_MLX_COMPILE,
+# BREEZE_MLX_FAST_FIRST, BREEZE_MLX_CACHE_GB, BREEZE_MLX_GROUP, BREEZE_CHUNKS,
+# BREEZE_PORT, BREEZE_GUI_PORT, BREEZE_CORS, BREEZE_REPO, BREEZE_MODEL
 set -euo pipefail
 
 REPO="${BREEZE_REPO:-$HOME/Github/breeze-tts2-fast-streaming-api}"
-SNAP="${BREEZE_MODEL:-$HOME/.cache/huggingface/hub/models--mlx-community--Breeze-TTS-2-mlx-8bit/snapshots/c6e4a2ff6ab9afba68b7853de802273ffe23fb49}"
+HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
 PORT="${BREEZE_PORT:-8080}"
 GUI_PORT="${BREEZE_GUI_PORT:-8090}"
 CORS="${BREEZE_CORS:-http://127.0.0.1:$GUI_PORT,http://localhost:$GUI_PORT}"
+PRECISION="${BREEZE_PRECISION:-8bit}"
 
-[ -d "$SNAP" ] || { echo "breeze-run: model snapshot not found: $SNAP" >&2; exit 1; }
+case "$PRECISION" in
+  8bit)
+    DEFAULT_SNAP="$HUB/models--mlx-community--Breeze-TTS-2-mlx-8bit/snapshots/c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
+    CHUNKS=""
+    ;;
+  mixed)
+    DEFAULT_SNAP="$HUB/models--mlx-community--Breeze-TTS-2-mlx/snapshots/3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+    export BREEZE_MLX_QUANT="${BREEZE_MLX_QUANT-depth:8}"
+    export BREEZE_MLX_COMPILE="${BREEZE_MLX_COMPILE-1}"
+    export BREEZE_MLX_FAST_FIRST="${BREEZE_MLX_FAST_FIRST-6}"
+    export BREEZE_MLX_CACHE_GB="${BREEZE_MLX_CACHE_GB-1}"
+    CHUNKS="--chunk-first 1 --chunk-max 1"
+    ;;
+  bf16)
+    DEFAULT_SNAP="$HUB/models--mlx-community--Breeze-TTS-2-mlx/snapshots/3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+    export BREEZE_MLX_COMPILE="${BREEZE_MLX_COMPILE-1}"
+    export BREEZE_MLX_FAST_FIRST="${BREEZE_MLX_FAST_FIRST-6}"
+    export BREEZE_MLX_CACHE_GB="${BREEZE_MLX_CACHE_GB-1}"
+    # Full precision is the slowest build; large chunks starve playback, so keep
+    # them small. Raise --chunk-max if this machine turns out to have headroom.
+    CHUNKS="--chunk-first 1 --chunk-max 4"
+    ;;
+  *)
+    echo "breeze-run: BREEZE_PRECISION must be 8bit, mixed or bf16 (got '$PRECISION')" >&2
+    exit 2
+    ;;
+esac
+
+SNAP="${BREEZE_MODEL:-$DEFAULT_SNAP}"
+CHUNKS="${BREEZE_CHUNKS:-$CHUNKS}"
+
+if [ ! -d "$SNAP" ]; then
+  echo "breeze-run: no $PRECISION weights at $SNAP" >&2
+  if [ "$PRECISION" != "8bit" ]; then
+    echo "            download them with:" >&2
+    echo "            HF_XET_FIXED_DOWNLOAD_CONCURRENCY=4 hf download \\" >&2
+    echo "              mlx-community/Breeze-TTS-2-mlx --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8" >&2
+  fi
+  exit 1
+fi
 [ -x "$REPO/.venv/bin/python" ] || { echo "breeze-run: venv missing at $REPO/.venv" >&2; exit 1; }
 
-echo "Breeze TTS 2 (MLX, 8bit) -> http://127.0.0.1:$PORT"
+echo "Breeze TTS 2 (MLX, $PRECISION) -> http://127.0.0.1:$PORT"
 echo "  loopback only, WebSocket off, CORS: $CORS"
+if [ -n "$CHUNKS" ]; then echo "  chunks: $CHUNKS"; fi
+if [ "$PRECISION" != "8bit" ]; then
+  echo "  BREEZE_MLX_QUANT=${BREEZE_MLX_QUANT-<unset>} COMPILE=${BREEZE_MLX_COMPILE-<unset>}" \
+       "FAST_FIRST=${BREEZE_MLX_FAST_FIRST-<unset>} CACHE_GB=${BREEZE_MLX_CACHE_GB-<unset>}"
+fi
 echo "  GUI: start 'breeze-gui' in another terminal, then open http://127.0.0.1:$GUI_PORT/"
 echo "Ctrl-C to stop."
 
 cd "$REPO"
 exec ./.venv/bin/python -m breeze_infer.api "$SNAP" \
-  --host 127.0.0.1 --port "$PORT" --ws-port disabled --cors="$CORS"
+  --host 127.0.0.1 --port "$PORT" --ws-port disabled --cors="$CORS" $CHUNKS

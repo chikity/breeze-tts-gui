@@ -138,10 +138,15 @@ breeze-say "Clone this line." out.wav \
 | Variable | Default |
 | --- | --- |
 | `BREEZE_PORT` | `8080` — server port |
+| `BREEZE_PRECISION` | `8bit` (default), `mixed` or `bf16` — picks weights *and* speed settings |
+| `BREEZE_MLX_CACHE_GB` | `1` — caps MLX's buffer cache; see the memory note below |
+| `BREEZE_MLX_QUANT` | `depth:8` under `mixed`; parts are `backbone`/`depth`, bits `2,3,4,5,6,8` |
+| `BREEZE_MLX_GROUP` | `64` — quantization group size; smaller is more accurate |
+| `BREEZE_CHUNKS` | streaming chunk bounds, set per precision |
 | `BREEZE_GUI_PORT` | `8090` — GUI port (and the allowlisted origin) |
 | `BREEZE_CORS` | the GUI origin on both `127.0.0.1` and `localhost` |
 | `BREEZE_REPO` | `~/Github/breeze-tts2-fast-streaming-api` |
-| `BREEZE_MODEL` | the pinned 8-bit snapshot path |
+| `BREEZE_MODEL` | the pinned snapshot path for the chosen precision |
 | `BREEZE_API` | `http://127.0.0.1:8080` (GUI side) |
 | `BREEZE_PY` | the server venv's `python` |
 
@@ -262,24 +267,55 @@ which is the same quantity the model's own figures describe; it deliberately doe
 **not** wait for playback to start, which would fold in browser audio-device
 startup.
 
-### Optional: better voice-direction fidelity
+### Weight options (precision)
 
-The 8-bit build quantizes the backbone as well as the depth decoder. A *mixed*
-build — bf16 backbone, int8 depth decoder — keeps the backbone bit-exact and
-measures faster still (~139 ms first audio on an M4 Pro, backbone KL of 0).
-It needs a 7.6 GB download, though the `audio_tokenizer` dedupes against the 8-bit
-cache:
+`breeze-run` takes `BREEZE_PRECISION`, which selects the weights *and* the matching
+speed settings. The server accepts exactly three checkpoint kinds and refuses
+everything else — notably 4-bit, which is why the popular 4-bit MLX conversion
+can't be used here at all.
+
+| `BREEZE_PRECISION` | Weights | Backbone | Depth decoder | First audio | RTF |
+| --- | --- | --- | --- | --- | --- |
+| `8bit` *(default)* | 3.89 GB | mxfp8 | mxfp8 | ~200 ms | 0.49–0.51 |
+| `mixed` | bf16 (6.91 GB) | **exact** | int8 | ~139 ms | 0.62 |
+| `bf16` | bf16 (6.91 GB) | **exact** | **exact** | — | ~0.86 |
+
+The figures in the last two columns are the fork's, measured on an M4 Pro; the
+`8bit` row is what we measured here on an M5 Pro.
+
+**Only `8bit` quantizes the backbone**, and that is the part that matters: the
+backbone sets prosody and is where a voice direction lands, and CFG *amplifies*
+its error by multiplying the gap between the two guidance rows. In the fork
+author's blind listening test, `8bit` placed worst on seven of ten lines and best
+on none, while `bf16` and `mixed` tied. Quantizing only the depth decoder is close
+to free — it runs 15× per frame, so that is precisely where quantization buys
+speed with almost no quality cost.
+
+`mixed` and `bf16` use the *same* checkpoint; `mixed` just quantizes the depth
+decoder at load. So one 7.6 GB download unlocks both:
 
 ```bash
-uvx --from huggingface_hub hf download mlx-community/Breeze-TTS-2-mlx \
+HF_XET_FIXED_DOWNLOAD_CONCURRENCY=4 hf download mlx-community/Breeze-TTS-2-mlx \
   --revision 3c8829fb7fd335818f085cd2ef49b4100c0e46c8
+
+BREEZE_PRECISION=mixed breeze-run     # or bf16
 ```
 
-Then run with the bf16 snapshot and `--precision mixed`-equivalent settings
-(`BREEZE_MLX_QUANT=depth:8`, `BREEZE_MLX_COMPILE=1`, `BREEZE_MLX_FAST_FIRST=6`,
-`BREEZE_MLX_CACHE_GB=1`, `--chunk-first 1 --chunk-max 1`), or point
-`BREEZE_MODEL` at the pre-built [`Shoof/Gust-MLX`](https://huggingface.co/Shoof/Gust-MLX)
-checkpoint.
+**Memory: the buffer-cache cap matters more than the precision.** MLX keeps freed
+buffers by default, so an uncapped bf16 run climbs from ~9 GB toward ~15 GB. All
+three profiles here set `BREEZE_MLX_CACHE_GB=1`, which is the difference between
+those two numbers — `mixed` weighs barely less than `bf16` yet reports 8.9 GB
+rather than 15. Override with `BREEZE_MLX_CACHE_GB` if you want to trade memory for
+speed.
+
+`BREEZE_MLX_GROUP` (default 64) tunes the quantized layers: a smaller group size is
+more accurate and costs a little memory and time.
+
+**Throughput is the real constraint on `bf16`**, not memory. It measured RTF 0.86 on
+an M4 Pro and 1.47 — slower than real time — on a 16 GB M5, so streamed playback can
+starve. That is why its default chunk bounds here are `--chunk-first 1 --chunk-max 4`
+rather than the wider ones the other profiles use; raise `BREEZE_CHUNKS` if your
+machine has headroom.
 
 ---
 
