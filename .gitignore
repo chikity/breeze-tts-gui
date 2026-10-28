@@ -1,3 +1,19 @@
 .DS_Store
 __pycache__/
 *.pyc
+
+# generated audio, playlists and render caches
+*.wav
+*.m4a
+*.m4b
+*.m3u
+*.pcm
+.parts/
+.breeze-epub.json
+
+# books used for reading or testing (fixtures are fetched, not committed)
+*.epub
+
+# local tooling
+.venv/
+node_modules/

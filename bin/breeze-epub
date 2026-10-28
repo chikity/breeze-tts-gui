@@ -1,0 +1,1060 @@
+#!/usr/bin/env python3
+"""Read an EPUB aloud through the running Breeze TTS 2 server.
+
+    breeze-epub book.epub                      # list settings/needs a voice
+    breeze-epub book.epub --list               # chapters + lengths, no audio
+    breeze-epub book.epub --voice alice        # reuse a saved voice (best)
+    breeze-epub book.epub --ref me.wav --ref-text "exact transcript"
+    breeze-epub book.epub --instruction "A calm female narrator." --cfg 3 --m4b
+
+Why a reference voice: the model has no persistent speaker. Every request is
+generated from scratch, so "the same voice" only survives if the same speaker
+conditioning goes into every request. A reference clip (or a saved voice built
+from one) fixes the speaker. A voice-design instruction has no speaker of its
+own, so this script anchors it once: it synthesizes a short sample, registers
+that as a reference, and uses the resulting voice id for every chunk.
+
+The EPUB is read with the standard library only: zip -> container.xml -> OPF
+spine -> XHTML -> text. Chapters go out as one request each where they fit under
+the server's 10,000-character limit; longer ones are split at paragraph breaks.
+Each chunk's PCM is cached, so an interrupted book resumes where it stopped.
+
+Output is 24 kHz mono 16-bit WAV (the server's native rate), one file per
+chapter plus the whole book, an .m3u playlist, optionally .m4a via macOS's
+afconvert, and optionally one .m4b audiobook with chapter marks via ffmpeg.
+Nothing here needs the server's venv.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import html
+import io
+import json
+import os
+import posixpath
+import re
+import shutil
+import subprocess
+import sys
+import time
+import urllib.error
+import urllib.parse
+import urllib.request
+import uuid
+import wave
+import zipfile
+from html.parser import HTMLParser
+from xml.etree import ElementTree as ET
+
+VERSION = "1.0"
+SAMPLE_RATE = 24_000          # Breeze TTS 2 output, per its API
+BYTES_PER_SEC = SAMPLE_RATE * 2
+API = os.environ.get("BREEZE_API", "http://127.0.0.1:8080").rstrip("/")
+MAX_TEXT_CHARS = 10_000       # server limit (text_too_long above this)
+
+# Blocks that end a paragraph. Inline tags (b, i, em, span, a) deliberately do not.
+BLOCK_TAGS = {
+    "p", "div", "br", "hr", "li", "ul", "ol", "dl", "dt", "dd", "blockquote",
+    "pre", "section", "article", "header", "footer", "aside", "figure",
+    "figcaption", "table", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6",
+}
+# Never spoken. <sup> is usually a footnote marker, which reads as a stray number.
+SKIP_TAGS = {"script", "style", "head", "title", "sup", "svg", "math", "rt", "rp"}
+HEADING_TAGS = {"h1": 1, "h2": 2, "h3": 3, "h4": 4, "h5": 5, "h6": 6}
+
+
+def die(msg: str, code: int = 1) -> None:
+    print(f"breeze-epub: {msg}", file=sys.stderr)
+    raise SystemExit(code)
+
+
+def human_time(seconds: float) -> str:
+    s = int(round(seconds))
+    h, rem = divmod(s, 3600)
+    m, sec = divmod(rem, 60)
+    return f"{h}:{m:02d}:{sec:02d}" if h else f"{m}:{sec:02d}"
+
+
+# ── EPUB parsing ────────────────────────────────────────────────────────────
+
+def local(tag: str) -> str:
+    return tag.rsplit("}", 1)[-1] if "}" in tag else tag
+
+
+class DocText(HTMLParser):
+    """XHTML -> paragraph-separated text, plus the first heading seen."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.paras: list[str] = []
+        self._skipping = 0
+        self._buf: list[str] = []
+        self._heading = 0
+        self._heading_buf: list[str] = []
+        self.headings: list[tuple[int, str]] = []
+
+    def handle_starttag(self, tag, attrs):
+        if tag in SKIP_TAGS:
+            self._skipping += 1
+            return
+        if tag in HEADING_TAGS:
+            self._heading = HEADING_TAGS[tag]
+            self._heading_buf = []
+        if tag in BLOCK_TAGS:
+            self._flush()
+
+    def handle_endtag(self, tag):
+        if tag in SKIP_TAGS:
+            self._skipping = max(0, self._skipping - 1)
+            return
+        if tag in BLOCK_TAGS:
+            self._flush()
+        if tag in HEADING_TAGS and self._heading:
+            text = clean_inline("".join(self._heading_buf))
+            if text:
+                self.headings.append((self._heading, text))
+            self._heading = 0
+
+    def handle_data(self, data):
+        if self._skipping:
+            return
+        self._buf.append(data)
+        if self._heading:
+            self._heading_buf.append(data)
+
+    def _flush(self):
+        text = clean_inline("".join(self._buf))
+        if text:
+            self.paras.append(text)
+        self._buf = []
+
+    def close(self):
+        super().close()
+        self._flush()
+
+    def text(self) -> str:
+        # Paragraphs are separated by a blank line; the TTS treats it as a pause and
+        # the chunker uses it as the preferred place to break.
+        return "\n\n".join(self.paras)
+
+
+def clean_inline(raw: str) -> str:
+    s = html.unescape(raw) if "&" in raw else raw
+    s = s.replace("\u00ad", "")            # soft hyphen
+    s = s.replace("\u200b", "").replace("\ufeff", "")
+    s = s.replace("\u00a0", " ")
+    s = re.sub(r"[\t\r\n ]+", " ", s)
+    return s.strip()
+
+
+def opf_path(zf: zipfile.ZipFile) -> str:
+    try:
+        root = ET.fromstring(zf.read("META-INF/container.xml"))
+    except KeyError:
+        die("not an EPUB: META-INF/container.xml is missing")
+    for el in root.iter():
+        if local(el.tag) == "rootfile" and el.get("full-path"):
+            return el.get("full-path")
+    die("not an EPUB: container.xml names no rootfile")
+    return ""  # unreachable
+
+
+class Epub:
+    def __init__(self, path: str) -> None:
+        self.path = path
+        try:
+            self.zf = zipfile.ZipFile(path)
+        except (OSError, zipfile.BadZipFile) as e:
+            die(f"cannot open {path}: {e}")
+        self.opf = opf_path(self.zf)
+        self.opf_dir = posixpath.dirname(self.opf)
+        self._read_opf()
+
+    def _read_opf(self) -> None:
+        try:
+            root = ET.fromstring(self.zf.read(self.opf))
+        except ET.ParseError as e:
+            die(f"bad OPF in {self.path}: {e}")
+
+        self.manifest: dict[str, dict] = {}
+        self.title = ""
+        self.author = ""
+        self.cover_id = ""
+        for el in root.iter():
+            name = local(el.tag)
+            if name == "item" and el.get("id"):
+                href = el.get("href") or ""
+                self.manifest[el.get("id")] = {
+                    "href": self._join(href),
+                    "type": el.get("media-type") or "",
+                    "properties": el.get("properties") or "",
+                }
+            elif name == "title" and not self.title:
+                self.title = (el.text or "").strip()
+            elif name == "creator" and not self.author:
+                self.author = (el.text or "").strip()
+            elif name == "meta" and not self.cover_id and \
+                    (el.get("name") or "").strip().lower() == "cover":
+                self.cover_id = (el.get("content") or "").strip()
+
+        self.cover_href = ""
+        for item in self.manifest.values():
+            if "cover-image" in item["properties"].split():
+                self.cover_href = item["href"]
+                break
+        if not self.cover_href and self.cover_id:
+            item = self.manifest.get(self.cover_id)
+            if item:
+                self.cover_href = item["href"]
+
+        self.spine: list[dict] = []
+        for el in root.iter():
+            if local(el.tag) != "itemref":
+                continue
+            if (el.get("linear") or "yes").lower() == "no":
+                continue
+            item = self.manifest.get(el.get("idref") or "")
+            if item:
+                self.spine.append(item)
+
+        self.ncx_titles = self._ncx_titles()
+        nav = next((i for i in self.manifest.values() if "nav" in i["properties"].split()), None)
+        if nav:
+            self.ncx_titles.update(self._nav_titles(nav["href"]))
+
+    def _join(self, href: str) -> str:
+        href = urllib.parse.unquote(href.split("#", 1)[0])
+        return posixpath.normpath(posixpath.join(self.opf_dir, href))
+
+    def cover(self) -> tuple[bytes, str] | None:
+        """The cover image, if the package names one, as (bytes, extension)."""
+        if not self.cover_href:
+            return None
+        try:
+            return self.zf.read(self.cover_href), posixpath.splitext(self.cover_href)[1].lower()
+        except KeyError:
+            return None
+
+    def _ncx_titles(self) -> dict[str, str]:
+        ncx = next((i for i in self.manifest.values()
+                    if i["type"] == "application/x-dtbncx+xml"), None)
+        if not ncx:
+            return {}
+        try:
+            root = ET.fromstring(self.zf.read(ncx["href"]))
+        except (KeyError, ET.ParseError):
+            return {}
+        titles: dict[str, str] = {}
+        for point in root.iter():
+            if local(point.tag) != "navPoint":
+                continue
+            label = src = None
+            for el in point.iter():
+                n = local(el.tag)
+                if n == "text" and label is None:
+                    label = (el.text or "").strip()
+                elif n == "content" and src is None:
+                    src = el.get("src") or ""
+            if label and src:
+                key = self._join(posixpath.join(posixpath.dirname(ncx["href"]), src))
+                titles.setdefault(key, label)
+        return titles
+
+    def _nav_titles(self, nav_href: str) -> dict[str, str]:
+        class Nav(HTMLParser):
+            def __init__(self):
+                super().__init__(convert_charrefs=True)
+                self.depth = 0
+                self.href = None
+                self.buf: list[str] = []
+                self.links: list[tuple[str, str]] = []
+
+            def handle_starttag(self, tag, attrs):
+                a = dict(attrs)
+                if tag == "nav":
+                    self.depth += 1
+                elif tag == "a" and self.depth:
+                    self.href = a.get("href")
+                    self.buf = []
+
+            def handle_endtag(self, tag):
+                if tag == "nav":
+                    self.depth = max(0, self.depth - 1)
+                elif tag == "a" and self.href is not None:
+                    text = clean_inline("".join(self.buf))
+                    if text:
+                        self.links.append((self.href, text))
+                    self.href = None
+
+            def handle_data(self, data):
+                if self.href is not None:
+                    self.buf.append(data)
+
+        try:
+            raw = self.zf.read(nav_href).decode("utf-8", "replace")
+        except KeyError:
+            return {}
+        nav = Nav()
+        nav.feed(raw)
+        base = posixpath.dirname(nav_href)
+        titles: dict[str, str] = {}
+        for href, text in nav.links:
+            # First occurrence wins, so a TOC entry beats a later landmarks entry.
+            titles.setdefault(self._join(posixpath.join(base, href)), text)
+        return titles
+
+    def chapters(self) -> list[dict]:
+        out: list[dict] = []
+        for item in self.spine:
+            if item["type"] and not any(t in item["type"] for t in ("xhtml", "html")):
+                continue
+            if not re.search(r"\.x?html?$", item["href"], re.I):
+                continue
+            try:
+                raw = self.zf.read(item["href"]).decode("utf-8", "replace")
+            except KeyError:
+                continue
+            doc = DocText()
+            doc.feed(raw)
+            doc.close()
+            text = doc.text()
+            # An image-only plate or blank page has nothing to say. A short *titled*
+            # chapter (a poem, a one-line interlude) is real content and is kept.
+            if len(text) < 25 and not doc.headings:
+                continue
+            title = self.ncx_titles.get(item["href"])
+            if not title and doc.headings:
+                title = doc.headings[0][1]
+            if not title:
+                title = posixpath.basename(item["href"])
+            title = re.sub(r"\s+", " ", title).strip()
+            if len(title) > 90:
+                title = title[:87].rstrip() + "…"
+            out.append({"href": item["href"], "title": title, "text": text})
+        return out
+
+
+# ── chunking ────────────────────────────────────────────────────────────────
+
+SENTENCE_END = re.compile(
+    r'(?:[.!?]+["”’\')\]]?(?=\s|$)'      # Latin punctuation needs a space or the end
+    r'|[。！？…]+["”’\')\]]?)'            # CJK punctuation does not
+)
+
+
+def sentences(par: str) -> list[str]:
+    out, start = [], 0
+    for m in SENTENCE_END.finditer(par):
+        out.append(par[start:m.end()])
+        start = m.end()
+    if start < len(par):
+        out.append(par[start:])
+    return [s.strip() for s in out if s.strip()]
+
+
+def hard_split(text: str, limit: int) -> list[str]:
+    """Last resort for a single over-long sentence: break on spaces, then anywhere."""
+    out, buf = [], ""
+    for word in text.split():
+        if len(buf) + len(word) + 1 <= limit:
+            buf = f"{buf} {word}".strip()
+        else:
+            if buf:
+                out.append(buf)
+            while len(word) > limit:
+                out.append(word[:limit])
+                word = word[limit:]
+            buf = word
+    if buf:
+        out.append(buf)
+    return out
+
+
+def chunks(text: str, limit: int) -> list[str]:
+    """Paragraph-aligned chunks under `limit`; over-long paragraphs split on sentences."""
+    limit = max(200, min(limit, MAX_TEXT_CHARS))
+    pieces: list[str] = []
+    buf = ""
+    for par in text.split("\n\n"):
+        par = par.strip()
+        if not par:
+            continue
+        units = [par] if len(par) <= limit else []
+        if not units:
+            for sent in sentences(par):
+                units.extend([sent] if len(sent) <= limit else hard_split(sent, limit))
+        for unit in units:
+            candidate = f"{buf}\n\n{unit}" if buf else unit
+            if len(candidate) <= limit:
+                buf = candidate
+            else:
+                if buf:
+                    pieces.append(buf)
+                buf = unit
+    if buf:
+        pieces.append(buf)
+    return pieces
+
+
+# ── API ─────────────────────────────────────────────────────────────────────
+
+def api_health() -> None:
+    try:
+        with urllib.request.urlopen(API + "/health", timeout=4):
+            return
+    except urllib.error.HTTPError as e:
+        die(f"{API}/health answered {e.code} -- is that the Breeze server?")
+    except urllib.error.URLError as e:
+        reason = getattr(e, "reason", e)
+        die(f"no server at {API} ({reason}) -- start it with: breeze-run")
+
+
+def _error_message(raw: bytes, status: int) -> str:
+    try:
+        data = json.loads(raw.decode("utf-8", "replace"))
+    except (ValueError, AttributeError):
+        return raw.decode("utf-8", "replace").strip()[:300] or f"HTTP {status}"
+    if isinstance(data, dict):
+        bits = [data.get("code"), data.get("message") or data.get("error"), data.get("detail")]
+        msg = ": ".join(str(b) for b in bits if b)
+        if msg:
+            return msg
+    return str(data)[:300]
+
+
+def register_voice(ref_path: str, ref_text: str, name: str | None) -> str:
+    """POST /v1/voices once; every synthesis request then reuses the returned id."""
+    try:
+        blob = open(ref_path, "rb").read()
+    except OSError as e:
+        die(f"cannot read reference {ref_path}: {e}")
+    if not ref_text.strip():
+        die("--ref-text is required with --ref (the clip's exact transcript)")
+
+    boundary = "----breeze" + uuid.uuid4().hex
+    body = io.BytesIO()
+    for key, value in (("ref_text", ref_text), ("name", name or "")):
+        if key == "name" and not value:
+            continue
+        body.write(f"--{boundary}\r\nContent-Disposition: form-data; "
+                   f'name="{key}"\r\n\r\n{value}\r\n'.encode())
+    body.write(f"--{boundary}\r\nContent-Disposition: form-data; "
+               f'name="ref_audio"; filename="{os.path.basename(ref_path)}"\r\n'
+               f"Content-Type: application/octet-stream\r\n\r\n".encode())
+    body.write(blob)
+    body.write(f"\r\n--{boundary}--\r\n".encode())
+
+    req = urllib.request.Request(
+        API + "/v1/voices", data=body.getvalue(), method="POST",
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=120) as r:
+            data = json.loads(r.read().decode())
+    except urllib.error.HTTPError as e:
+        die(f"voice registration failed: {_error_message(e.read(), e.code)}", 2)
+    except urllib.error.URLError as e:
+        die(f"voice registration failed: {e}", 2)
+    voice_id = data.get("id")
+    if not voice_id:
+        die(f"voice registration returned no id: {data}", 2)
+    print(f"voice {voice_id}  ({data.get('seconds', 0):.2f}s reference, "
+          f"{data.get('frames', '?')} frames)", file=sys.stderr)
+    return voice_id
+
+
+def voice_ids() -> set[str]:
+    """Ids currently registered on the server, for reusing an anchored voice."""
+    try:
+        with urllib.request.urlopen(API + "/v1/voices", timeout=10) as r:
+            data = json.loads(r.read().decode())
+        return {v.get("id") for v in data if isinstance(v, dict) and v.get("id")}
+    except (OSError, ValueError):
+        return set()
+
+
+def guess_cps(text: str) -> float:
+    """Characters per second, before measuring: Latin ~14, CJK far fewer per second."""
+    cjk = sum(1 for c in text
+              if "\u3040" <= c <= "\u30ff" or "\u3400" <= c <= "\u9fff"
+              or "\uf900" <= c <= "\ufaff")
+    return max(5.0, 14.0 - 8.0 * cjk / max(1, len(text)))
+
+
+def anchor_sample(text: str, cps: float) -> str:
+    """~18 s of text, cut at a sentence end, for anchoring a designed voice."""
+    flat = " ".join(text.split())
+    target = max(60, min(260, round(18 * cps)))
+    if len(flat) <= target:
+        return flat
+    cut = flat[:target]
+    m = re.search(r"^.*[.!?。！？…][\"”’')\]]?", cut, re.S)
+    out = (m.group(0) if m else cut).strip()
+    return out if len(out) >= 40 else cut.strip()
+
+
+def anchor_design_voice(fields: dict[str, str], chapters: list[dict],
+                        outdir: str, name: str | None) -> str:
+    """Make one sample of the designed voice, register it, and return its id.
+
+    Voice design has no speaker between requests. Anchoring it once means every
+    chapter of the book is read by the same voice instead of a new one per chunk.
+    The sample always comes from the start of the book, so --start/--end cannot
+    change the anchor (and therefore the voice) between runs.
+    """
+    cps = guess_cps(chapters[0]["text"])
+    sample = anchor_sample(" ".join(ch["text"] for ch in chapters), cps)
+    if len(sample) < 20:
+        die("not enough text to anchor a designed voice")
+    pcm = os.path.join(outdir, ".anchor.pcm")
+    wav = os.path.join(outdir, ".anchor.wav")
+    print(f"anchoring the designed voice with a {len(sample)}-char sample "
+          f"(~{len(sample) / cps:.0f} s) ...", file=sys.stderr)
+    request = dict(fields)
+    request["text"] = sample
+    synthesize_with_retry(request, pcm)
+    try:
+        with wave.open(wav, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(SAMPLE_RATE)
+            with open(pcm, "rb") as f:
+                w.writeframes(f.read())
+        return register_voice(wav, sample, name)
+    finally:
+        _unlink(pcm)
+        _unlink(wav)
+
+
+def synthesize(fields: dict[str, str], dest: str, heartbeat: bool = True) -> int:
+    """One request -> raw 24 kHz mono s16le PCM at `dest`. Returns bytes written."""
+    data = urllib.parse.urlencode(fields).encode()
+    req = urllib.request.Request(
+        API + "/v1/audio/speech", data=data, method="POST",
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    tmp = dest + ".part"
+    started = time.time()
+    last = started
+    written = 0
+    ticked = False
+    try:
+        with urllib.request.urlopen(req, timeout=600) as r, open(tmp, "wb") as f:
+            while True:
+                block = r.read(1 << 20)
+                if not block:
+                    break
+                f.write(block)
+                written += len(block)
+                if heartbeat and time.time() - last >= 10:
+                    last = time.time()
+                    ticked = True
+                    sys.stderr.write(f"\r      … {human_time(written / BYTES_PER_SEC)} generated")
+                    sys.stderr.flush()
+        if ticked:
+            sys.stderr.write("\r" + " " * 44 + "\r")
+        os.replace(tmp, dest)
+        return written
+    except urllib.error.HTTPError as e:
+        _unlink(tmp)
+        raise ApiFailure(e.code, _error_message(e.read(), e.code)) from None
+    except urllib.error.URLError as e:
+        _unlink(tmp)
+        raise ApiFailure(0, str(e.reason)) from None
+    except OSError as e:
+        # A dropped connection mid-stream arrives as RemoteDisconnected, not URLError.
+        _unlink(tmp)
+        raise ApiFailure(0, str(e)) from None
+    except BaseException:
+        _unlink(tmp)
+        raise
+
+
+class ApiFailure(Exception):
+    def __init__(self, status: int, message: str):
+        self.status = status
+        self.message = message
+        super().__init__(f"HTTP {status}: {message}" if status else message)
+
+
+def synthesize_with_retry(fields: dict[str, str], dest: str, attempts: int = 8) -> int:
+    delay = 2.0
+    for i in range(attempts):
+        try:
+            return synthesize(fields, dest)
+        except ApiFailure as e:
+            # 409 busy: the GPU is serving the GUI or another client. Not fatal.
+            if e.status in (409, 503, 502) and i < attempts - 1:
+                sys.stderr.write(f"\r      {e.message}; retrying in {delay:.0f}s…\n")
+                time.sleep(delay)
+                delay = min(delay * 1.6, 20)
+                continue
+            die(f"synthesis failed: {e}", 2)
+    die("synthesis failed: out of retries", 2)
+    return 0
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
+
+
+# ── WAV handling ────────────────────────────────────────────────────────────
+
+def write_wav(path: str, pcm_files: list[str], gap_files: list[str] | None = None) -> int:
+    """Concatenate PCM files into one WAV without decoding anything. Returns bytes of audio."""
+    gap_files = gap_files or []
+    total = sum(os.path.getsize(p) for p in pcm_files)
+    tmp = path + ".part"
+    with open(tmp, "wb") as out:
+        out.write(b"RIFF")
+        out.write((36 + total).to_bytes(4, "little"))
+        out.write(b"WAVEfmt ")
+        out.write((16).to_bytes(4, "little"))
+        out.write((1).to_bytes(2, "little"))          # PCM
+        out.write((1).to_bytes(2, "little"))          # mono
+        out.write(SAMPLE_RATE.to_bytes(4, "little"))
+        out.write(BYTES_PER_SEC.to_bytes(4, "little"))
+        out.write((2).to_bytes(2, "little"))          # block align
+        out.write((16).to_bytes(2, "little"))         # bits
+        out.write(b"data")
+        out.write(total.to_bytes(4, "little"))
+        for pcm in pcm_files:
+            with open(pcm, "rb") as f:
+                shutil.copyfileobj(f, out, 1 << 20)
+    os.replace(tmp, path)
+    return total
+
+
+def to_m4a(src: str, dst: str) -> bool:
+    exe = shutil.which("afconvert")
+    if not exe:
+        print("  (afconvert not found; keeping WAV only)", file=sys.stderr)
+        return False
+    # AAC-LC at 24 kHz mono caps out below 96 kbps: asking for more makes afconvert
+    # fail with "Couldn't set audio converter property ('!dat')". Fall back to its
+    # default bitrate if even 64k is refused.
+    for extra in (["-b", "64000"], []):
+        r = subprocess.run([exe, "-f", "m4af", "-d", "aac", *extra, src, dst],
+                           capture_output=True)
+        if r.returncode == 0 and os.path.exists(dst) and os.path.getsize(dst) > 0:
+            return True
+    _unlink(dst)
+    print(f"  (afconvert failed for {os.path.basename(src)}; keeping WAV)",
+          file=sys.stderr)
+    return False
+
+
+def ffmeta(value: str) -> str:
+    """Escape a value for ffmpeg's FFMETADATA format."""
+    return (str(value).replace("\\", "\\\\").replace("=", "\\=")
+            .replace(";", "\\;").replace("#", "\\#")
+            .replace("\r", " ").replace("\n", " ").strip())
+
+
+def to_m4b(files: list[str], titles: list[str], dst: str, *,
+           title: str, author: str,
+           cover: tuple[bytes, str] | None = None,
+           loudnorm: bool = True) -> bool:
+    """Mux the chapter WAVs into one M4B with chapter marks (needs ffmpeg).
+
+    Built from the chapter files rather than the whole-book WAV so it works past
+    the 4 GiB WAV limit and with --no-book. The concat demuxer joins them with no
+    inserted silence; the chapter marks are what separate the chapters.
+    """
+    exe = shutil.which("ffmpeg")
+    if not exe:
+        print("  (ffmpeg not found; cannot write M4B -- install it with: "
+              "brew install ffmpeg)", file=sys.stderr)
+        return False
+    if not files:
+        return False
+
+    tmpdir = dst + ".tmp"
+    shutil.rmtree(tmpdir, ignore_errors=True)
+    os.makedirs(tmpdir, exist_ok=True)
+    try:
+        list_path = os.path.join(tmpdir, "chapters.ffconcat")
+        with open(list_path, "w") as f:
+            f.write("ffconcat version 1.0\n")
+            for path in files:
+                quoted = os.path.abspath(path).replace("'", "'\\''")
+                f.write(f"file '{quoted}'\n")
+
+        meta_path = os.path.join(tmpdir, "meta.txt")
+        starts = []
+        t = 0.0
+        for path, chapter_title in zip(files, titles):
+            dur = max(0, os.path.getsize(path) - 44) / BYTES_PER_SEC
+            starts.append((t, t + dur, chapter_title))
+            t += dur
+        with open(meta_path, "w") as f:
+            f.write(";FFMETADATA1\n")
+            for key, value in (("title", title), ("artist", author), ("album", title),
+                               ("genre", "Audiobook"), ("media_type", "2")):
+                if value:
+                    f.write(f"{key}={ffmeta(value)}\n")
+            for start, end, chapter_title in starts:
+                f.write("\n[CHAPTER]\nTIMEBASE=1/1000\n")
+                f.write(f"START={round(start * 1000)}\nEND={round(end * 1000)}\n")
+                f.write(f"title={ffmeta(chapter_title)}\n")
+
+        cover_path = None
+        if cover and cover[1] in (".jpg", ".jpeg", ".png"):
+            cover_path = os.path.join(tmpdir, "cover" + cover[1])
+            with open(cover_path, "wb") as f:
+                f.write(cover[0])
+
+        cmd = [exe, "-y", "-f", "concat", "-safe", "0", "-i", list_path,
+               "-f", "ffmetadata", "-i", meta_path]
+        if cover_path:
+            cmd += ["-i", cover_path]
+        cmd += ["-map", "0:a", "-map_metadata", "1", "-map_chapters", "1"]
+        if cover_path:
+            cmd += ["-map", "2:v", "-c:v", "copy", "-disposition:v:0", "attached_pic"]
+        if loudnorm:
+            cmd += ["-af", "loudnorm=I=-19:TP=-1.5:LRA=11"]
+        cmd += ["-c:a", "aac", "-b:a", "64k", "-ar", str(SAMPLE_RATE), "-ac", "1",
+                "-movflags", "+faststart", "-f", "ipod", dst]
+
+        r = subprocess.run(cmd, capture_output=True, text=True)
+        if r.returncode != 0:
+            tail = "\n".join(r.stderr.strip().splitlines()[-8:])
+            print(f"  (ffmpeg failed for M4B)\n{tail}", file=sys.stderr)
+            _unlink(dst)
+            return False
+        return os.path.exists(dst) and os.path.getsize(dst) > 0
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+def slug(text: str, limit: int = 60) -> str:
+    # Keep non-Latin titles (中文, русский, ...) instead of collapsing them to "chapter".
+    s = re.sub(r"[^\w \-]+", "", text, flags=re.UNICODE).strip()
+    s = re.sub(r"[ _]+", "-", s).strip("-").lower()
+    return (s[:limit].rstrip("-") or "chapter")
+
+
+# ── main ────────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    ap = argparse.ArgumentParser(
+        prog="breeze-epub",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Read an EPUB aloud through the Breeze TTS 2 server, in one voice.",
+        epilog="""\
+voice (pick one):
+  --voice NAME|ID          an existing saved voice -- reuse it for every chunk
+  --ref CLIP --ref-text T  register a clone reference once, reuse its voice id
+  --instruction TEXT       voice design; anchored once, so it holds for the book
+
+examples:
+  breeze-epub book.epub --list
+  breeze-epub book.epub --voice alice --m4b
+  breeze-epub book.epub --ref me.wav --ref-text "the exact words I said"
+  breeze-epub book.epub --instruction "A calm, low female narrator." --cfg 3 --m4b
+""")
+    ap.add_argument("epub")
+    ap.add_argument("outdir", nargs="?", help="output directory (default: <epub dir>/<stem>)")
+    ap.add_argument("--voice", metavar="NAME|ID", help="saved voice id or name")
+    ap.add_argument("--ref", metavar="CLIP", help="reference clip (wav/flac/ogg, <=30s)")
+    ap.add_argument("--ref-text", metavar="TEXT", help="exact transcript of --ref")
+    ap.add_argument("--save-voice", metavar="NAME",
+                    help="save the --ref clip or --instruction anchor under this name")
+    ap.add_argument("--instruction", metavar="TEXT", help="voice direction / design instruction")
+    ap.add_argument("--cfg", type=float, default=None,
+                    help="cfg_scale (default: 2 with --instruction, else 1)")
+    ap.add_argument("--seed", type=int, default=42, help="base seed (default 42)")
+    ap.add_argument("--chunk-chars", type=int, default=9000,
+                    help="max characters per request, up to 10000 (default 9000)")
+    ap.add_argument("--split-chars", type=int, default=None,
+                    help="server's internal split budget (default: server's 600)")
+    ap.add_argument("--gap", type=float, default=0.8, help="silence between chapters, s (default 0.8)")
+    ap.add_argument("--start", type=int, default=1, help="first chapter to read (1-based)")
+    ap.add_argument("--end", type=int, default=None, help="last chapter to read (inclusive)")
+    ap.add_argument("--list", action="store_true", help="list chapters and exit")
+    ap.add_argument("--m4a", action="store_true", help="also write AAC .m4a files (macOS)")
+    ap.add_argument("--m4b", action="store_true",
+                    help="write one .m4b audiobook with chapter marks (needs ffmpeg)")
+    ap.add_argument("--no-loudnorm", action="store_true",
+                    help="skip loudness normalisation in the .m4b")
+    ap.add_argument("--cover", metavar="IMAGE", help="cover image for the .m4b (default: from the EPUB)")
+    ap.add_argument("--title", metavar="TEXT", help="book title for the .m4b (default: from the EPUB)")
+    ap.add_argument("--author", metavar="TEXT", help="author for the .m4b (default: from the EPUB)")
+    ap.add_argument("--fresh", action="store_true", help="discard an existing run in outdir")
+    ap.add_argument("--no-book", action="store_true", help="chapters only, no whole-book WAV")
+    ap.add_argument("--version", action="version", version=f"breeze-epub {VERSION}")
+    a = ap.parse_args()
+
+    if a.chunk_chars > MAX_TEXT_CHARS:
+        die(f"--chunk-chars must be at most {MAX_TEXT_CHARS} (the server's text limit)")
+
+    book = Epub(a.epub)
+    chapters = book.chapters()
+    if not chapters:
+        die("no readable chapters found -- is this a text EPUB (not a comic/manga)?")
+
+    if a.list:
+        total = 0
+        for i, ch in enumerate(chapters, 1):
+            total += len(ch["text"])
+            print(f"{i:3d}  {len(ch['text']):6,d} chars  {ch['title']}")
+        print(f"\n{len(chapters)} chapters, {total:,} characters "
+              f"(~{human_time(total / 14.0)})")
+        return
+
+    # ── chapter range ──
+    first = max(1, a.start)
+    last = min(len(chapters), a.end or len(chapters))
+    if first > last:
+        die(f"empty chapter range {first}-{last} (the book has {len(chapters)})")
+
+    # ── voice configuration ──
+    if sum(bool(x) for x in (a.voice, a.ref, a.instruction)) > 1:
+        die("choose one voice source: --voice, --ref, or --instruction")
+    if a.save_voice and not (a.ref or a.instruction):
+        die("--save-voice needs --ref or --instruction")
+    if a.ref and not a.ref_text:
+        die("--ref-text is required with --ref (the clip's exact transcript)")
+    if not (a.voice or a.ref or a.instruction):
+        die("pick a voice so it stays consistent: --voice NAME, "
+            "--ref CLIP --ref-text T, or --instruction TEXT")
+    if a.m4b and not shutil.which("ffmpeg"):
+        die("--m4b needs ffmpeg; install it with: brew install ffmpeg")
+
+    api_health()
+
+    cfg = a.cfg if a.cfg is not None else (2.0 if a.instruction else 1.0)
+    fields: dict[str, str] = {"cfg_scale": f"{cfg:g}", "seed": str(a.seed)}
+    if a.split_chars is not None:
+        fields["split_chars"] = str(a.split_chars)
+    if a.instruction:
+        fields["instruction"] = a.instruction
+
+    # "anchored" marks a design run so caches made before anchoring existed are
+    # not silently mixed with the new, consistent audio.
+    kind = (f"voice {a.voice}" if a.voice else
+            f"reference {os.path.basename(a.ref)}" if a.ref else
+            f"voice design anchored {a.instruction!r}")
+    ref_fingerprint = ""
+    if a.ref:
+        ref_fingerprint = hashlib.sha1(open(a.ref, "rb").read()).hexdigest()
+
+    # ── output dir + run signature ──
+    stem = os.path.splitext(os.path.basename(a.epub))[0]
+    outdir = a.outdir or os.path.join(os.path.dirname(os.path.abspath(a.epub)), stem)
+    os.makedirs(outdir, exist_ok=True)
+    sig = hashlib.sha1(json.dumps({
+        "v": VERSION,
+        "kind": kind,
+        "ref": ref_fingerprint,
+        "cfg": cfg,
+        "seed": a.seed,
+        "instruction": a.instruction,
+        "split": a.split_chars,
+        "chunk": a.chunk_chars,
+    }, sort_keys=True).encode()).hexdigest()[:10]
+
+    manifest_path = os.path.join(outdir, ".breeze-epub.json")
+    previous = None
+    if os.path.exists(manifest_path):
+        try:
+            previous = json.load(open(manifest_path))
+        except ValueError:
+            previous = None
+    if previous and previous.get("signature") != sig and not a.fresh:
+        die(f"{outdir} holds a run with different voice/settings "
+            f"(signature {previous.get('signature')}).\n"
+            f"       Use --fresh to replace it, or pick another outdir.")
+
+    # ── resolve the voice (design mode is anchored once) ──
+    if a.voice:
+        voice_id = a.voice
+    elif a.ref:
+        voice_id = register_voice(a.ref, a.ref_text, a.save_voice)
+    else:
+        reuse = None
+        ids = voice_ids()
+        if previous and previous.get("signature") == sig:
+            prev_id = previous.get("voice_id")
+            if prev_id and prev_id in ids:
+                reuse = prev_id
+        if not reuse and a.save_voice and a.save_voice in ids:
+            reuse = a.save_voice
+        if reuse:
+            voice_id = reuse
+            print(f"reusing anchored voice {voice_id}", file=sys.stderr)
+        else:
+            voice_id = anchor_design_voice(fields, chapters, outdir, a.save_voice)
+    fields["voice_id"] = voice_id
+
+    if a.fresh:
+        shutil.rmtree(os.path.join(outdir, ".parts"), ignore_errors=True)
+        for name in os.listdir(outdir):
+            if name.endswith((".wav", ".m4a", ".m4b", ".m3u")) or \
+                    name in (".breeze-epub.json", ".gap.pcm",
+                             ".anchor.pcm", ".anchor.wav"):
+                _unlink(os.path.join(outdir, name))
+    with open(manifest_path, "w") as f:
+        json.dump({"signature": sig, "voice": kind, "voice_id": voice_id,
+                   "cfg": cfg, "seed": a.seed,
+                   "epub": os.path.abspath(a.epub)}, f, indent=2)
+
+    # ── generate ──
+    gap_file = os.path.join(outdir, ".gap.pcm")
+    with open(gap_file, "wb") as f:
+        f.write(b"\x00" * (int(BYTES_PER_SEC * max(0.0, a.gap)) // 2 * 2))
+
+    parts_root = os.path.join(outdir, ".parts", sig)
+    os.makedirs(parts_root, exist_ok=True)
+
+    width = max(3, len(str(len(chapters))))
+    made: list[str] = []
+    made_titles: list[str] = []
+    started = time.time()
+    total_audio = 0
+    skipped = 0
+
+    for idx in range(first, last + 1):
+        ch = chapters[idx - 1]
+        name = f"{idx:0{width}d}-{slug(ch['title'])}"
+        wav = os.path.join(outdir, name + ".wav")
+        if os.path.exists(wav) and os.path.getsize(wav) > 1000 and not a.fresh:
+            total_audio += max(0, os.path.getsize(wav) - 44)
+            made.append(wav)
+            made_titles.append(ch["title"])
+            skipped += 1
+            if a.m4a and not os.path.exists(wav[:-4] + ".m4a"):
+                to_m4a(wav, wav[:-4] + ".m4a")
+            continue
+
+        pieces = chunks(ch["text"], a.chunk_chars)
+        chdir = os.path.join(parts_root, f"{idx:0{width}d}")
+        os.makedirs(chdir, exist_ok=True)
+        print(f"[{idx}/{len(chapters)}] {ch['title']}  "
+              f"({len(ch['text']):,} chars, {len(pieces)} request"
+              f"{'s' if len(pieces) != 1 else ''})", file=sys.stderr, flush=True)
+
+        pcm_files: list[str] = []
+        for n, piece in enumerate(pieces, 1):
+            h = hashlib.sha1(piece.encode()).hexdigest()[:12]
+            pcm = os.path.join(chdir, f"{n:03d}-{h}.pcm")
+            pcm_files.append(pcm)
+            if os.path.exists(pcm) and os.path.getsize(pcm) > 0:
+                if os.path.getsize(pcm) % 2:
+                    with open(pcm, "r+b") as f:
+                        f.truncate(os.path.getsize(pcm) - 1)
+                continue
+            t0 = time.time()
+            request = dict(fields)
+            request["text"] = piece
+            size = synthesize_with_retry(request, pcm)
+            if size % 2:
+                with open(pcm, "r+b") as f:
+                    f.truncate(size - 1)
+            print(f"      {n}/{len(pieces)}: {len(piece):,} chars -> "
+                  f"{human_time(size / BYTES_PER_SEC)} audio in "
+                  f"{time.time() - t0:.1f}s", file=sys.stderr, flush=True)
+
+        size = write_wav(wav, pcm_files)
+        total_audio += size
+        made.append(wav)
+        made_titles.append(ch["title"])
+        # Chapter is safely on disk; its PCM parts are redundant now. An interrupted
+        # run keeps them, so only the chapter in flight ever repeats.
+        shutil.rmtree(chdir, ignore_errors=True)
+        if a.m4a:
+            to_m4a(wav, wav[:-4] + ".m4a")
+        print(f"      wrote {os.path.basename(wav)}  ({human_time(size / BYTES_PER_SEC)})",
+              file=sys.stderr, flush=True)
+
+    # ── whole book + playlist ──
+    if not a.no_book:
+        full = os.path.join(outdir, f"{slug(stem, 80)}.wav")
+        # Rebuild from the chapter files so gaps and skipped chapters stay coherent.
+        gap_bytes = os.path.getsize(gap_file) if len(made) > 1 else 0
+        total = (sum(max(0, os.path.getsize(w) - 44) for w in made)
+                 + gap_bytes * (len(made) - 1))
+        if total > 0xFFFFFFFF - 36:
+            # RIFF is a 32-bit format. Past ~4 GiB the whole-book file cannot exist;
+            # the chapter files are unaffected, and --m4a avoids the problem in practice.
+            print("book: over 4 GiB, too large for one WAV -- kept the chapter files"
+                  " only (use --no-book next time to skip this)", file=sys.stderr)
+        else:
+            tmp = full + ".part"
+            with open(tmp, "wb") as out:
+                out.write(b"RIFF" + (36 + total).to_bytes(4, "little") + b"WAVEfmt ")
+                out.write((16).to_bytes(4, "little") + (1).to_bytes(2, "little")
+                          + (1).to_bytes(2, "little"))
+                out.write(SAMPLE_RATE.to_bytes(4, "little")
+                          + BYTES_PER_SEC.to_bytes(4, "little"))
+                out.write((2).to_bytes(2, "little") + (16).to_bytes(2, "little")
+                          + b"data" + total.to_bytes(4, "little"))
+                for i, w in enumerate(made):
+                    with open(w, "rb") as f:
+                        f.seek(44)
+                        shutil.copyfileobj(f, out, 1 << 20)
+                    if i != len(made) - 1:
+                        with open(gap_file, "rb") as g:
+                            shutil.copyfileobj(g, out)
+            os.replace(tmp, full)
+            if a.m4a:
+                to_m4a(full, full[:-4] + ".m4a")
+            print(f"book: {full}  ({human_time(total / BYTES_PER_SEC)})", file=sys.stderr)
+
+    # ── audiobook (one file, chapter marks) ──
+    if a.m4b and made:
+        m4b = os.path.join(outdir, slug(stem, 80) + ".m4b")
+        if a.cover:
+            try:
+                with open(a.cover, "rb") as f:
+                    cover = (f.read(), os.path.splitext(a.cover)[1].lower())
+            except OSError as e:
+                die(f"cannot read cover {a.cover}: {e}")
+        else:
+            cover = book.cover()
+        m4b_title = a.title or book.title or stem
+        m4b_author = a.author or book.author
+        print(f"m4b: writing {os.path.basename(m4b)} ...", file=sys.stderr)
+        if to_m4b(made, made_titles, m4b, title=m4b_title, author=m4b_author,
+                  cover=cover, loudnorm=not a.no_loudnorm):
+            print(f"m4b: {m4b}  ({os.path.getsize(m4b) / 1048576:.1f} MB)",
+                  file=sys.stderr)
+
+    with open(os.path.join(outdir, slug(stem) + ".m3u"), "w") as f:
+        f.write("#EXTM3U\n")
+        for w in made:
+            f.write(os.path.basename(w) + "\n")
+
+    try:
+        os.unlink(gap_file)
+    except OSError:
+        pass
+    # Chapters are assembled, so their PCM parts are gone; drop the now-empty dirs.
+    for root, _dirs, _files in os.walk(parts_root, topdown=False):
+        try:
+            os.rmdir(root)
+        except OSError:
+            pass
+    try:
+        os.rmdir(os.path.dirname(parts_root))   # .parts, if it is now empty
+    except OSError:
+        pass
+
+    elapsed = time.time() - started
+    print(f"\n{len(made)} chapter file(s), {human_time(total_audio / BYTES_PER_SEC)} of audio, "
+          f"{human_time(elapsed)} elapsed"
+          + (f", {skipped} reused" if skipped else ""), file=sys.stderr)
+    print(outdir)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\nbreeze-epub: interrupted -- rerun the same command to resume", file=sys.stderr)
+        raise SystemExit(130)

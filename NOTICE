@@ -1,0 +1,43 @@
+breeze-tts-gui
+Copyright (c) 2026 Chi Kit Yeung
+
+This repository's own source code — index.html, the scripts in bin/, and
+README.md — is released under the MIT License. See LICENSE.
+
+This project is a client. It does not include, redistribute or relicense the
+following.
+
+
+Breeze TTS 2 model weights
+--------------------------
+The weights, including every MLX conversion, are governed by the BreezeBlue
+Research and Non-Commercial License: research and non-commercial use only.
+Nothing in this repository grants any rights to them, and commercial use
+requires a separate licence from BreezeBlue. The weights are downloaded by the
+user into the standard Hugging Face cache and are not part of this repository.
+
+  https://huggingface.co/BreezeBlue/Breeze-TTS-2
+
+
+Streaming server
+----------------
+The server this client talks to (Shoofio/breeze-tts2-fast-streaming-api) is a
+separate Apache-2.0 program, installed from its own checkout. It is not bundled
+here; this client only speaks to it over HTTP.
+
+
+Vendored design skill
+---------------------
+.opencode/skills/ui-ux-pro-max/ is vendored unmodified from
+nextlevelbuilder/ui-ux-pro-max-skill under the MIT License
+(c) 2024 Next Level Builder. Its own LICENSE file is kept alongside it and takes
+precedence for those files. It is a design-time tool and is never loaded or
+executed by the GUI.
+
+
+The MLX conversions are unofficial community work, not affiliated with or
+endorsed by BreezeBlue.
+
+You are responsible for the rights to any text, audio or voice you use as input,
+and for how you use the output. Unauthorised voice cloning, impersonation and
+other unlawful uses are prohibited.

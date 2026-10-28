@@ -1,0 +1,179 @@
+#!/usr/bin/env bash
+# One-command setup for the Breeze TTS 2 client on Apple Silicon.
+#
+#   ./bin/breeze-setup              # server checkout, venv, weights, links
+#   ./bin/breeze-setup --check      # report what is missing, change nothing
+#   ./bin/breeze-setup --no-model   # skip the ~7.6 GB download
+#
+# It is idempotent: an existing checkout, venv, or weights snapshot is reused.
+# The server is never started here -- loading 8 GB of weights takes a while, and
+# you may want to read what it prints. Run `breeze-doctor` afterwards.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="${BREEZE_REPO:-$HOME/Github/breeze-tts2-fast-streaming-api}"
+BIN_DIR="${BREEZE_BIN_DIR:-$HOME/.local/bin}"
+PRECISION="${BREEZE_PRECISION:-mixed}"
+DO_MODEL=1
+DO_LINK=1
+CHECK=0
+
+BF16_REPO="mlx-community/Breeze-TTS-2-mlx"
+BF16_REV="3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+BIT8_REPO="mlx-community/Breeze-TTS-2-mlx-8bit"
+BIT8_REV="c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
+
+say()  { printf '==> %s\n' "$*"; }
+warn() { printf 'warning: %s\n' "$*" >&2; }
+die()  { printf 'breeze-setup: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'EOF'
+usage: breeze-setup [options]
+
+  --repo DIR       server checkout (default: $BREEZE_REPO or
+                   ~/Github/breeze-tts2-fast-streaming-api)
+  --no-model       skip the weights download
+  --no-link        do not symlink the scripts into ~/.local/bin
+  --check          run the checks and print the plan, change nothing
+  -h, --help       this text
+
+environment:
+  BREEZE_PRECISION   mixed (default), bf16 or 8bit -- selects the weights
+  BREEZE_REPO        server checkout
+  BREEZE_BIN_DIR     where to put the symlinks (default: ~/.local/bin)
+EOF
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --repo)
+      [ "$#" -ge 2 ] || die "--repo needs a directory"
+      REPO="$2"; shift 2 ;;
+    --no-model) DO_MODEL=0; shift ;;
+    --no-link)  DO_LINK=0; shift ;;
+    --check)    CHECK=1; shift ;;
+    -h|--help)  usage; exit 0 ;;
+    *) die "unknown option '$1' (try --help)" ;;
+  esac
+done
+
+case "$PRECISION" in
+  mixed|bf16) DL_REPO="$BF16_REPO"; DL_REV="$BF16_REV" ;;
+  8bit)       DL_REPO="$BIT8_REPO"; DL_REV="$BIT8_REV" ;;
+  *) die "BREEZE_PRECISION must be mixed, bf16 or 8bit (got '$PRECISION')" ;;
+esac
+
+HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+HUB_DIR_NAME="$(printf '%s' "$DL_REPO" | sed 's|/|--|g')"
+SNAP="$HUB/models--$HUB_DIR_NAME/snapshots/$DL_REV"
+
+# ── preflight ──────────────────────────────────────────────────────────────
+say "checking this Mac"
+[ "$(uname -s)" = "Darwin" ] || die "this is macOS-only (MLX)"
+[ "$(uname -m)" = "arm64" ] || die "Apple Silicon required (MLX does not run on Intel)"
+
+osver="$(sw_vers -productVersion)"
+major="${osver%%.*}"
+[ "$major" -ge 14 ] || die "macOS 14 or later required (this is $osver)"
+
+mem_bytes="$(sysctl -n hw.memsize)"
+mem_gib=$((mem_bytes / 1024 / 1024 / 1024))
+[ "$mem_gib" -ge 16 ] || die "at least 16 GB of memory required (this Mac reports ${mem_gib} GB)"
+
+free_kib="$(df -k "$HOME" | awk 'NR==2 {print $4}')"
+need_kib=$((12 * 1024 * 1024))
+[ "$free_kib" -ge "$need_kib" ] || \
+  die "at least 12 GB free on $HOME is needed (found $((free_kib / 1024 / 1024)) GB)"
+
+for tool in git curl uv; do
+  command -v "$tool" >/dev/null 2>&1 || {
+    if [ "$tool" = uv ]; then
+      die "uv is required. Install it with: brew install uv"
+    fi
+    die "$tool is required"
+  }
+done
+
+say "macOS $osver, ${mem_gib} GB, $((free_kib / 1024 / 1024)) GB free, precision $PRECISION"
+say "server checkout: $REPO"
+say "weights: $SNAP"
+
+if [ "$CHECK" -eq 1 ]; then
+  [ -d "$REPO" ] && say "server checkout exists" || say "server checkout would be cloned"
+  [ -x "$REPO/.venv/bin/python" ] && say "venv exists" || say "venv would be created"
+  [ -d "$SNAP" ] && [ -n "$(ls -A "$SNAP" 2>/dev/null)" ] && say "weights present" || \
+    { [ "$DO_MODEL" -eq 1 ] && say "weights would be downloaded" || say "weights skipped (--no-model)"; }
+  [ "$DO_LINK" -eq 1 ] && say "scripts would be linked into $BIN_DIR" || say "links skipped (--no-link)"
+  exit 0
+fi
+
+# ── server checkout + venv ─────────────────────────────────────────────────
+if [ ! -d "$REPO" ]; then
+  say "cloning the server"
+  mkdir -p "$(dirname "$REPO")"
+  git clone --depth 1 https://github.com/Shoofio/breeze-tts2-fast-streaming-api.git "$REPO"
+else
+  say "using the existing server checkout"
+fi
+
+[ -f "$REPO/requirements.txt" ] || die "no requirements.txt in $REPO -- is that the server repo?"
+[ -f "$REPO/requirements-mac-overrides.txt" ] || \
+  die "no requirements-mac-overrides.txt in $REPO"
+
+if [ ! -x "$REPO/.venv/bin/python" ]; then
+  say "creating the Python 3.12 venv"
+  ( cd "$REPO" && uv venv --python 3.12 )
+fi
+
+say "installing server dependencies (this can take a minute)"
+# --python is explicit because `uv pip install` prefers an active VIRTUAL_ENV.
+( cd "$REPO" && env -u VIRTUAL_ENV uv pip install \
+    --python "$REPO/.venv/bin/python" \
+    -r requirements.txt --overrides requirements-mac-overrides.txt )
+
+say "checking the server package imports"
+( cd "$REPO" && ./.venv/bin/python -c "import breeze_infer" ) || \
+  die "the server package does not import -- see the install output above"
+
+# ── weights ────────────────────────────────────────────────────────────────
+if [ "$DO_MODEL" -eq 1 ]; then
+  if [ -d "$SNAP" ] && [ -n "$(ls -A "$SNAP" 2>/dev/null)" ]; then
+    say "weights already present ($(du -shL "$SNAP" | awk '{print $1}'))"
+  else
+    say "downloading $PRECISION weights (~7.6 GB, one time)"
+    # Pin xet concurrency: without it the backend degrades to one connection.
+    HF_XET_FIXED_DOWNLOAD_CONCURRENCY=4 \
+      uvx --from huggingface_hub hf download "$DL_REPO" --revision "$DL_REV"
+    [ -d "$SNAP" ] || die "the download finished but $SNAP is missing"
+    say "weights: $(du -sh "$SNAP" | awk '{print $1}')"
+  fi
+else
+  say "skipping the weights download (--no-model)"
+fi
+
+# ── links ──────────────────────────────────────────────────────────────────
+if [ "$DO_LINK" -eq 1 ]; then
+  say "linking scripts into $BIN_DIR"
+  mkdir -p "$BIN_DIR"
+  for name in run gui say epub doctor setup; do
+    chmod +x "$SCRIPT_DIR/breeze-$name"
+    ln -sfn "$SCRIPT_DIR/breeze-$name" "$BIN_DIR/breeze-$name"
+  done
+  case ":$PATH:" in
+    *":$BIN_DIR:"*) ;;
+    *) warn "add $BIN_DIR to PATH to run 'breeze-run' from anywhere" ;;
+  esac
+else
+  say "skipping script links (--no-link)"
+fi
+
+cat <<EOF
+
+Setup complete.
+
+  breeze-doctor     check the install and the server
+  breeze-run        start the server (first load takes a while)
+  breeze-gui        in another terminal, then open http://127.0.0.1:8090/
+  breeze-epub --help
+EOF

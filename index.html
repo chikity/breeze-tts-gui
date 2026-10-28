@@ -5,234 +5,728 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Breeze TTS 2</title>
 <!-- inline icon so no /favicon.ico request is ever made -->
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%232563eb'/><g fill='%23fff'><rect x='6' y='13' width='3' height='6' rx='1.5'/><rect x='11.5' y='9' width='3' height='14' rx='1.5'/><rect x='17' y='11.5' width='3' height='9' rx='1.5'/><rect x='22.5' y='14' width='3' height='4' rx='1.5'/></g></svg>">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%230f172a'/><g fill='%2322c55e'><rect x='6' y='13' width='3' height='6' rx='1.5'/><rect x='11.5' y='9' width='3' height='14' rx='1.5'/><rect x='17' y='11.5' width='3' height='9' rx='1.5'/><rect x='22.5' y='14' width='3' height='4' rx='1.5'/></g></svg>">
 <style>
+  /* ── design tokens ─────────────────────────────────────────────
+     Palette and type follow the "Developer Tool / IDE" result from
+     UI UX Pro Max: code-dark surfaces, a "run green" accent, and a
+     mono+sans pair for figures and prose. The accent splits by mode
+     because #22c55e cannot carry white text at 4.5:1 — it is used
+     with near-black text on dark, and a darker green on light. */
   :root {
-    --bg:#f6f7f9; --panel:#fff; --fg:#15181d; --muted:#6b7280; --line:#e3e6ea;
-    --accent:#2563eb; --accent-fg:#fff; --ok:#16a34a; --warn:#b45309; --err:#dc2626;
-    --field:#fff; --chip:#f1f3f5; --code:#f6f8fa; --radius:10px;
+    --bg:#f8fafc; --surface:#fff; --surface-2:#f1f5f9;
+    --fg:#0f172a; --muted:#475569; --line:#e2e8f0; --line-strong:#cbd5e1;
+    --accent:#15803d; --accent-hover:#166534; --accent-fg:#fff;
+    --focus:#2563eb; --ok:#15803d; --warn:#b45309; --err:#b91c1c;
+    --field:#fff; --chip:#f1f5f9; --code:#f1f5f9;
+
+    --r-sm:8px; --r:10px; --r-lg:14px;
+    --s1:4px; --s2:8px; --s3:12px; --s4:16px; --s5:24px; --s6:32px;
+
+    --sh-1:0 1px 2px rgba(15,23,42,.06), 0 1px 3px rgba(15,23,42,.10);
+    --sh-2:0 6px 18px rgba(15,23,42,.12);
+
+    --t-fast:150ms; --t:200ms; --ease-out:cubic-bezier(.2,.8,.2,1);
+
+    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,monospace;
+    color-scheme:light;
   }
   @media (prefers-color-scheme: dark) {
     :root {
-      --bg:#101216; --panel:#171a1f; --fg:#e8eaed; --muted:#9aa2ad; --line:#282d34;
-      --accent:#3b82f6; --accent-fg:#fff; --ok:#22c55e; --warn:#f59e0b; --err:#f87171;
-      --field:#1e2228; --chip:#22272e; --code:#14181d;
+      --bg:#0f172a; --surface:#1e293b; --surface-2:#172033;
+      --fg:#f8fafc; --muted:#94a3b8; --line:#334155; --line-strong:#475569;
+      --accent:#22c55e; --accent-hover:#4ade80; --accent-fg:#0f172a;
+      --focus:#60a5fa; --ok:#22c55e; --warn:#f59e0b; --err:#f87171;
+      --field:#0f172a; --chip:#172033; --code:#172033;
+
+      --sh-1:0 1px 2px rgba(0,0,0,.40);
+      --sh-2:0 6px 18px rgba(0,0,0,.45);
+      color-scheme:dark;
     }
   }
+
   * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
   body {
     margin:0; background:var(--bg); color:var(--fg);
-    font:14px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+    font:16px/1.55 -apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",Roboto,sans-serif;
+    -webkit-font-smoothing:antialiased;
   }
+
+  /* ── focus: visible everywhere, not just on inputs ─────────── */
+  :focus-visible {
+    outline:2px solid var(--focus); outline-offset:2px; border-radius:4px;
+  }
+  .skip {
+    position:absolute; left:-9999px; top:0; z-index:100;
+    background:var(--surface); color:var(--fg);
+    border:1px solid var(--line-strong); border-radius:var(--r-sm);
+    padding:10px 14px; font-size:14px; text-decoration:none;
+  }
+  .skip:focus { left:12px; top:12px; }
+  .sr-only {
+    position:absolute; width:1px; height:1px; padding:0; margin:-1px;
+    overflow:hidden; clip-path:inset(50%); white-space:nowrap; border:0;
+  }
+  fieldset { border:0; padding:0; margin:0; min-inline-size:0; }
+
+  /* ── header ────────────────────────────────────────────────── */
   header {
-    display:flex; align-items:center; gap:12px; flex-wrap:wrap;
-    padding:14px 20px; border-bottom:1px solid var(--line); background:var(--panel);
+    display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;
+    padding:var(--s3) var(--s4);
+    border-bottom:1px solid var(--line); background:var(--surface);
+    position:sticky; top:0; z-index:20;
   }
-  header h1 { font-size:15px; margin:0; letter-spacing:-.01em; }
-  header .sub { color:var(--muted); font-size:12px; }
+  .brand { display:flex; align-items:center; gap:10px; min-width:0; }
+  .brand svg { color:var(--accent); flex:0 0 auto; }
+  header h1 { font-size:17px; margin:0; letter-spacing:-.01em; font-weight:650; }
+  header .sub { color:var(--muted); font-size:13px; }
+  .brand-text { display:flex; align-items:baseline; gap:var(--s2); flex-wrap:wrap; min-width:0; }
+
   .pill {
-    margin-left:auto; display:inline-flex; align-items:center; gap:7px;
-    font-size:12px; padding:4px 11px; border-radius:999px;
-    border:1px solid var(--line); background:var(--chip); color:var(--muted);
+    margin-left:auto; display:inline-flex; align-items:center; gap:var(--s2);
+    font-size:13px; padding:6px 12px; border-radius:999px;
+    border:1px solid var(--line); background:var(--surface-2); color:var(--muted);
   }
-  .dot { width:7px; height:7px; border-radius:50%; background:var(--muted); }
-  .dot.ok { background:var(--ok); } .dot.err { background:var(--err); }
-  main { display:grid; grid-template-columns:minmax(0,1.35fr) minmax(0,1fr); gap:16px; padding:16px 20px 0; align-items:start; }
+  .dot { width:8px; height:8px; border-radius:50%; background:var(--muted); flex:0 0 auto; }
+  .dot.ok { background:var(--ok); }
+  .dot.err { background:var(--err); }
+
+  /* ── layout ────────────────────────────────────────────────── */
+  main {
+    display:grid; grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);
+    gap:var(--s4); padding:var(--s4) var(--s4) 0; align-items:start;
+    max-width:1440px; margin:0 auto;
+  }
+  .col { display:flex; flex-direction:column; gap:var(--s4); min-width:0; }
+  /* pin the result rail so Output stays visible while the form column scrolls */
+  @media (min-width:901px) {
+    .col-rail { position:sticky; top:76px; }
+  }
   @media (max-width:900px) { main { grid-template-columns:1fr; } }
-  section.panel { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:14px; }
-  .panel + .panel { margin-top:16px; }
-  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.07em; color:var(--muted); margin:0 0 10px; font-weight:600; }
-  label { display:block; font-size:12px; color:var(--muted); margin-bottom:5px; }
+
+  section.panel {
+    background:var(--surface); border:1px solid var(--line);
+    border-radius:var(--r-lg); padding:var(--s4);
+  }
+  h2 {
+    font-size:12px; text-transform:uppercase; letter-spacing:.07em;
+    color:var(--muted); margin:0 0 var(--s3); font-weight:650;
+  }
+
+  /* ── form atoms ────────────────────────────────────────────── */
+  label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+  label .fld-note { color:var(--muted); }
   textarea, input[type=text], input[type=number], select {
-    width:100%; font:inherit; color:var(--fg); background:var(--field);
-    border:1px solid var(--line); border-radius:8px; padding:8px 10px;
+    width:100%; font:inherit; font-size:15px; color:var(--fg); background:var(--field);
+    border:1px solid var(--line-strong); border-radius:var(--r-sm); padding:9px 11px;
+    transition:border-color var(--t-fast) var(--ease-out), box-shadow var(--t-fast) var(--ease-out);
   }
-  textarea { resize:vertical; line-height:1.55; }
-  textarea:focus, input:focus, select:focus { outline:2px solid var(--accent); outline-offset:-1px; border-color:var(--accent); }
-  .row { display:flex; gap:10px; align-items:flex-end; }
+  textarea { resize:vertical; line-height:1.6; }
+  textarea::placeholder, input::placeholder { color:var(--muted); opacity:.75; }
+  textarea:focus, input:focus, select:focus {
+    outline:none; border-color:var(--focus);
+    box-shadow:0 0 0 3px color-mix(in srgb,var(--focus) 35%,transparent);
+  }
+  input[type=range], input[type=radio], input[type=checkbox] { accent-color:var(--accent); }
+
+  .row { display:flex; gap:var(--s3); align-items:flex-end; }
   .row > * { flex:1; min-width:0; }
-  .chips { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .row > .fixed { flex:0 0 auto; }
+
+  /* ── buttons ───────────────────────────────────────────────── */
   button {
-    font:inherit; cursor:pointer; border:1px solid var(--line); background:var(--chip);
-    color:var(--fg); border-radius:8px; padding:5px 10px;
+    font:inherit; font-size:14px; cursor:pointer; color:var(--fg);
+    border:1px solid var(--line-strong); background:var(--chip);
+    border-radius:var(--r-sm); padding:8px 13px;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    transition:background var(--t-fast) var(--ease-out),
+               border-color var(--t-fast) var(--ease-out),
+               color var(--t-fast) var(--ease-out);
   }
-  button:hover:not(:disabled) { border-color:var(--accent); }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  button.primary {
+  button:hover:not(:disabled) { border-color:var(--accent); background:color-mix(in srgb,var(--accent) 8%,var(--chip)); }
+  button:disabled { opacity:.55; cursor:not-allowed; }
+  button svg { flex:0 0 auto; }
+
+  .btn-primary {
     background:var(--accent); color:var(--accent-fg); border-color:var(--accent);
-    padding:10px 18px; font-weight:600;
+    padding:11px 20px; font-weight:650; font-size:15px;
   }
-  .muted { color:var(--muted); font-size:12px; }
-  .sources { display:flex; flex-direction:column; gap:8px; }
-  .srcopt { display:flex; align-items:center; gap:8px; font-size:13px; }
-  .srcopt input { width:auto; margin:0; }
-  .sub-field { margin:8px 0 0 24px; }
+  .btn-primary:hover:not(:disabled) { background:var(--accent-hover); border-color:var(--accent-hover); }
+  .btn-primary:disabled { opacity:.6; }
+  .btn-icon { padding:9px; }
+  .btn-sm { padding:5px 10px; font-size:13px; }
+  .btn-danger { color:var(--err); border-color:color-mix(in srgb,var(--err) 40%,var(--line-strong)); }
+  .btn-danger:hover:not(:disabled) { background:color-mix(in srgb,var(--err) 10%,var(--chip)); border-color:var(--err); }
+  /* a disabled Generate is the in-flight state — spin the trailing glyph */
+  .spin { display:none; }
+  #go:disabled .spin { display:block; animation:spin 900ms linear infinite; }
+  @keyframes spin { to { transform:rotate(360deg); } }
+
+  .muted { color:var(--muted); font-size:13px; }
+  .hint { color:var(--muted); font-size:13px; display:flex; align-items:center; gap:6px; flex-wrap:wrap; }
+  kbd {
+    font:12px var(--mono); border:1px solid var(--line-strong); border-bottom-width:2px;
+    border-radius:5px; padding:1px 5px; background:var(--surface-2); color:var(--fg);
+  }
+
+  /* ── script panel ──────────────────────────────────────────── */
+  .meta { display:flex; justify-content:space-between; gap:var(--s3); font-size:13px; color:var(--muted); margin-top:6px; }
+  .meta .count { font-family:var(--mono); font-variant-numeric:tabular-nums; }
+  .chipgroup { margin-top:var(--s3); }
+  .chipgroup > .lbl { font-size:12px; color:var(--muted); margin-bottom:6px; letter-spacing:.02em; }
+  .chips { display:flex; flex-wrap:wrap; gap:6px; }
+  .chips button { padding:5px 10px; font-size:13px; }
+
+  /* ── voice source: radio cards ─────────────────────────────── */
+  .srclist { display:flex; flex-direction:column; gap:var(--s2); }
+  .srcopt {
+    display:flex; align-items:flex-start; gap:10px; cursor:pointer;
+    border:1px solid var(--line-strong); border-radius:var(--r); padding:11px 13px;
+    background:var(--surface); margin:0; font-size:14px; color:var(--fg);
+    transition:border-color var(--t-fast) var(--ease-out), background var(--t-fast) var(--ease-out);
+  }
+  .srcopt:hover { border-color:var(--accent); }
+  .srcopt input { flex:0 0 auto; margin:3px 0 0; }
+  .srcopt .srcbody { display:flex; flex-direction:column; gap:1px; min-width:0; }
+  .srcopt .srctitle { font-size:14px; }
+  .srcopt .srcdesc { font-size:13px; color:var(--muted); }
+  .srcopt:has(input:checked) {
+    border-color:var(--accent);
+    background:color-mix(in srgb,var(--accent) 7%,var(--surface));
+  }
+  .srcopt:has(input:checked) .srctitle { font-weight:650; }
+  .srcopt:has(input:focus-visible) { outline:2px solid var(--focus); outline-offset:2px; }
+
+  .sub-field {
+    margin-top:var(--s2); padding:var(--s3);
+    background:var(--surface-2); border:1px solid var(--line); border-radius:var(--r);
+  }
+
   .drop {
-    border:1px dashed var(--line); border-radius:8px; padding:14px; text-align:center;
-    color:var(--muted); font-size:12px; cursor:pointer; background:var(--field);
+    width:100%; border:1px dashed var(--line-strong); border-radius:var(--r);
+    padding:var(--s4); text-align:center; color:var(--muted); font-size:14px;
+    background:var(--field); cursor:pointer;
+    display:flex; flex-direction:column; align-items:center; gap:6px;
+    transition:border-color var(--t-fast) var(--ease-out), color var(--t-fast) var(--ease-out);
   }
-  .drop.over { border-color:var(--accent); color:var(--accent); }
-  details { margin-top:10px; }
-  summary { cursor:pointer; font-size:12px; color:var(--muted); user-select:none; }
-  .adv { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:10px; }
-  .adv label { margin-bottom:3px; }
-  input[type=range] { width:100%; accent-color:var(--accent); }
-  .stat { display:flex; gap:16px; flex-wrap:wrap; margin-top:10px; }
-  .stat div { font-size:12px; color:var(--muted); }
-  .stat b { display:block; font-size:15px; color:var(--fg); font-variant-numeric:tabular-nums; }
-  audio { width:100%; margin-top:10px; }
+  .drop:hover, .drop.over { border-color:var(--accent); color:var(--accent); }
+  .drop.over { background:color-mix(in srgb,var(--accent) 8%,var(--field)); }
+
+  details { margin-top:var(--s3); }
+  summary { cursor:pointer; font-size:13px; color:var(--muted); user-select:none; }
+  summary:hover { color:var(--fg); }
+  .adv { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:var(--s3); margin-top:var(--s3); }
+  .adv label { margin-bottom:4px; font-family:var(--mono); font-size:12px; }
+
+  /* ── delivery ──────────────────────────────────────────────── */
+  .cfgval { font-family:var(--mono); font-variant-numeric:tabular-nums; color:var(--fg); }
+  input[type=range] { width:100%; height:24px; }
+  .ticks { display:flex; justify-content:space-between; font:11px var(--mono); color:var(--muted); margin-top:-2px; }
+
+  /* ── sticky action bar ─────────────────────────────────────── */
+  /* opaque, so when it floats over the form mid-scroll it reads as a
+     deliberate toolbar rather than content showing through */
+  .actionbar {
+    position:sticky; bottom:0; z-index:10;
+    display:flex; align-items:center; gap:var(--s3); flex-wrap:wrap;
+    padding:var(--s3) var(--s4);
+    background:var(--surface);
+    border:1px solid var(--line); border-radius:var(--r-lg);
+    box-shadow:var(--sh-2);
+  }
+  @media (max-width:640px) { .actionbar { position:static; } }
+
+  /* ── output ────────────────────────────────────────────────── */
+  .msg {
+    display:none; gap:9px; align-items:flex-start;
+    font-size:14px; padding:11px 13px; border-radius:var(--r);
+    margin-bottom:var(--s3); line-height:1.5;
+  }
+  .msg.show { display:flex; }
+  .msg::before {
+    content:""; flex:0 0 auto; width:17px; height:17px; margin-top:1px;
+    background:currentColor;
+    -webkit-mask:center/contain no-repeat; mask:center/contain no-repeat;
+  }
+  .msg.err {
+    background:color-mix(in srgb,var(--err) 12%,transparent); color:var(--err);
+    border:1px solid color-mix(in srgb,var(--err) 35%,transparent);
+  }
+  .msg.err::before {
+    -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+            mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3'/%3E%3Cpath d='M12 9v4'/%3E%3Cpath d='M12 17h.01'/%3E%3C/svg%3E");
+  }
+  .msg.info {
+    background:color-mix(in srgb,var(--accent) 12%,transparent); color:var(--accent);
+    border:1px solid color-mix(in srgb,var(--accent) 35%,transparent);
+  }
+  .msg.info::before {
+    -webkit-mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E");
+            mask-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23000' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Ccircle cx='12' cy='12' r='10'/%3E%3Cpath d='M12 16v-4'/%3E%3Cpath d='M12 8h.01'/%3E%3C/svg%3E");
+  }
+
+  audio { width:100%; margin-top:var(--s3); }
+
+  .stat { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:var(--s3); margin-top:var(--s4); }
+  @media (max-width:520px) { .stat { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+  .stat > div { font-size:12px; color:var(--muted); letter-spacing:.02em; min-width:0; }
+  .stat b {
+    display:block; font:600 17px/1.3 var(--mono);
+    font-variant-numeric:tabular-nums; color:var(--fg); margin-top:2px;
+  }
+
+  /* ── save progress ─────────────────────────────────────────── */
+  .saveprog {
+    margin-top:var(--s3); padding:var(--s3);
+    border:1px solid var(--line); border-radius:var(--r); background:var(--surface-2);
+  }
+  .saveprog-top {
+    display:flex; align-items:center; justify-content:space-between; gap:var(--s2);
+    font-size:13px; color:var(--fg);
+  }
+  .saveprog-top span { min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .saveprog-top button { flex:0 0 auto; padding:3px 9px; font-size:12px; }
+  .saveprog .bar { margin-top:6px; }
+  .saveprog .eta { margin-top:6px; font-size:12px; font-variant-numeric:tabular-nums; }
+
   pre {
-    background:var(--code); border:1px solid var(--line); border-radius:8px;
-    padding:10px; overflow:auto; font-size:11.5px; line-height:1.5; margin:8px 0 0;
-    font-family:ui-monospace,SFMono-Regular,Menlo,monospace; white-space:pre-wrap; word-break:break-word;
+    background:var(--code); border:1px solid var(--line); border-radius:var(--r-sm);
+    padding:var(--s3); overflow:auto; font:12.5px/1.55 var(--mono); margin:var(--s3) 0 0;
+    white-space:pre-wrap; word-break:break-word; color:var(--fg);
   }
-  table { width:100%; border-collapse:collapse; font-size:12.5px; }
-  th { text-align:left; font-weight:600; color:var(--muted); font-size:11px; text-transform:uppercase; letter-spacing:.05em; padding:0 8px 6px 0; }
-  td { padding:7px 8px 7px 0; border-top:1px solid var(--line); vertical-align:middle; }
-  td.trunc { max-width:280px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
-  .badge { font-size:10.5px; padding:2px 7px; border-radius:999px; background:var(--chip); color:var(--muted); border:1px solid var(--line); }
-  .msg { margin-top:10px; font-size:12.5px; padding:9px 11px; border-radius:8px; display:none; }
-  .msg.show { display:block; }
-  .msg.err { background:color-mix(in srgb,var(--err) 12%,transparent); color:var(--err); border:1px solid color-mix(in srgb,var(--err) 35%,transparent); }
-  .msg.info { background:color-mix(in srgb,var(--accent) 10%,transparent); color:var(--accent); border:1px solid color-mix(in srgb,var(--accent) 30%,transparent); }
-  footer { padding:14px 20px 28px; color:var(--muted); font-size:11.5px; }
-  footer code { background:var(--code); padding:1px 5px; border-radius:4px; }
+
+  /* ── voice library ─────────────────────────────────────────── */
+  .lib { grid-column:1 / -1; }
+  table { width:100%; border-collapse:collapse; font-size:14px; }
+  th {
+    text-align:left; font-weight:650; color:var(--muted); font-size:12px;
+    text-transform:uppercase; letter-spacing:.05em; padding:0 var(--s3) var(--s2) 0;
+  }
+  td { padding:10px var(--s3) 10px 0; border-top:1px solid var(--line); vertical-align:middle; }
+  td b { font-family:var(--mono); font-size:13.5px; }
+  td.trunc { max-width:300px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--muted); }
+  td.actions { padding-right:0; text-align:right; white-space:nowrap; }
+  td.actions button + button { margin-left:6px; }
+  td.empty { text-align:center; padding:var(--s5) 0; }
+  .badge {
+    font-size:11.5px; padding:2px 8px; border-radius:999px;
+    background:var(--chip); color:var(--muted); border:1px solid var(--line-strong);
+    text-transform:uppercase; letter-spacing:.04em;
+  }
+  @media (max-width:640px) {
+    .lib table, .lib thead, .lib tbody, .lib tr, .lib td { display:block; width:100%; }
+    .lib thead { display:none; }
+    .lib tr {
+      border:1px solid var(--line); border-radius:var(--r);
+      padding:var(--s3); margin-bottom:var(--s2); background:var(--surface-2);
+    }
+    .lib td {
+      border:0; padding:3px 0; display:grid; grid-template-columns:100px minmax(0,1fr); gap:10px;
+    }
+    .lib td::before {
+      content:attr(data-label); color:var(--muted);
+      font-size:11.5px; text-transform:uppercase; letter-spacing:.05em;
+    }
+    .lib td.trunc { max-width:none; white-space:normal; }
+    .lib td .badge { justify-self:start; }
+    .lib td.actions { display:flex; justify-content:flex-end; padding-top:var(--s2); }
+    .lib td.actions::before { content:none; }
+    .lib td.empty { display:block; text-align:left; }
+  }
 
   /* ── recorder + teleprompter ───────────────────────────────── */
-  .tp-head { display:flex; justify-content:space-between; align-items:center; gap:8px;
-             font-size:11.5px; color:var(--muted); margin-bottom:6px; }
+  .tp-head {
+    display:flex; justify-content:space-between; align-items:center; gap:var(--s3);
+    font-size:13px; color:var(--muted); margin-bottom:6px; flex-wrap:wrap;
+  }
   .tp-tools { display:flex; gap:6px; align-items:center; flex:0 0 auto; }
-  .tp-tools select { width:auto; padding:3px 6px; font-size:11.5px; }
+  .tp-tools select { width:auto; padding:5px 8px; font-size:13px; }
   .teleprompter {
-    background:var(--field); border:1px solid var(--line); border-radius:8px;
-    padding:12px 14px; font-size:15.5px; line-height:1.75;
-    max-height:180px; overflow:auto; scroll-behavior:smooth;
+    background:var(--field); border:1px solid var(--line-strong); border-radius:var(--r-sm);
+    padding:var(--s4); font-size:17px; line-height:1.75;
+    max-height:190px; overflow:auto; scroll-behavior:smooth;
     position:relative;   /* so span offsetTop is relative to this box, not the page */
   }
-  .teleprompter span { transition:background .1s linear, color .1s linear; border-radius:3px; }
+  .teleprompter span { transition:background var(--t-fast) linear, color var(--t-fast) linear; border-radius:3px; }
   .teleprompter span.done { color:var(--muted); }
-  .teleprompter span.now { background:var(--accent); color:var(--accent-fg); padding:0 2px; }
-  .rec-row { display:flex; align-items:center; gap:8px; margin-top:10px; flex-wrap:wrap; }
-  .rec-row .muted { font-variant-numeric:tabular-nums; }
+  /* the current word is marked by weight, underline and colour — never colour alone */
+  .teleprompter span.now {
+    background:var(--accent); color:var(--accent-fg);
+    font-weight:650; text-decoration:underline; text-underline-offset:3px;
+    padding:0 2px;
+  }
+  .rec-row { display:flex; align-items:center; gap:var(--s3); margin-top:var(--s3); flex-wrap:wrap; }
+  .rec-row .muted { font-variant-numeric:tabular-nums; font-family:var(--mono); }
   #recbtn.live, #recbtn.armed { background:var(--err); border-color:var(--err); color:#fff; }
-  .level { display:inline-block; width:64px; height:8px; border-radius:4px; overflow:hidden;
-           background:var(--chip); border:1px solid var(--line); }
-  .level i { display:block; height:100%; width:0%; background:var(--ok); transition:width .06s linear; }
-  .bar { height:5px; border-radius:3px; overflow:hidden; margin-top:8px;
-         background:var(--chip); border:1px solid var(--line); }
+  #recbtn.live:hover:not(:disabled) { background:color-mix(in srgb,#000 15%,var(--err)); }
+  .level {
+    display:inline-block; width:72px; height:10px; border-radius:5px; overflow:hidden;
+    background:var(--chip); border:1px solid var(--line-strong);
+  }
+  .level i { display:block; height:100%; width:0%; background:var(--ok); transition:width 60ms linear; }
+  .bar {
+    height:5px; border-radius:3px; overflow:hidden; margin-top:var(--s2);
+    background:var(--chip); border:1px solid var(--line-strong);
+  }
   .bar i { display:block; height:100%; width:0%; background:var(--accent); }
   .bar i.hot { background:var(--warn); }
+
+  /* ── mode switch ───────────────────────────────────────────── */
+  [hidden] { display:none !important; }
+  .modes {
+    display:flex; gap:2px; padding:3px; align-self:flex-start;
+    background:var(--surface-2); border:1px solid var(--line); border-radius:999px;
+  }
+  .modes [role=tab] {
+    border:0; background:transparent; border-radius:999px;
+    padding:6px 14px; font-size:13.5px; color:var(--muted);
+  }
+  .modes [role=tab]:hover:not(:disabled) {
+    background:transparent; border-color:transparent; color:var(--fg);
+  }
+  .modes [role=tab][aria-selected=true] {
+    background:var(--surface); color:var(--fg); font-weight:650; box-shadow:var(--sh-1);
+  }
+
+  /* ── book ──────────────────────────────────────────────────── */
+  .bookhead {
+    display:flex; align-items:flex-start; justify-content:space-between;
+    gap:var(--s3); margin-top:var(--s4);
+  }
+  .bookident { min-width:0; }
+  .btitle { font-weight:650; font-size:15px; letter-spacing:-.01em; }
+  .chapters {
+    list-style:none; margin:var(--s3) 0 0; padding:0;
+    max-height:240px; overflow:auto;
+    border:1px solid var(--line); border-radius:var(--r); background:var(--field);
+  }
+  .chapters li + li { border-top:1px solid var(--line); }
+  .chapters button {
+    width:100%; border:0; border-radius:0; background:transparent;
+    padding:9px 12px; font-size:14px; text-align:left; justify-content:flex-start;
+    align-items:baseline; gap:10px;
+  }
+  .chapters button:hover:not(:disabled) { background:var(--surface-2); border-color:transparent; }
+  .chapters button[aria-current=true] {
+    background:color-mix(in srgb,var(--accent) 10%,transparent); font-weight:650;
+  }
+  .chapters .n {
+    flex:none; min-width:2.4em; text-align:right;
+    font:11.5px var(--mono); color:var(--muted); font-variant-numeric:tabular-nums;
+  }
+  .chapters .t { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .chapters .c { flex:none; font:11px var(--mono); color:var(--muted); }
+  .booknow {
+    margin-top:var(--s3); font-size:13px; color:var(--muted);
+    font-variant-numeric:tabular-nums;
+  }
+  .reader {
+    margin-top:var(--s3); border:1px solid var(--line); border-radius:var(--r);
+    background:var(--field); overflow:hidden;
+  }
+  .reader-head {
+    display:flex; align-items:center; justify-content:space-between; gap:var(--s2);
+    padding:6px 10px; border-bottom:1px solid var(--line);
+    background:var(--surface-2); font-size:12px; color:var(--muted);
+  }
+  .reader-head .rtitle { flex:1 1 auto; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .reader-tools { display:flex; align-items:center; gap:4px; flex:0 0 auto; }
+  .reader-tools .btn-icon { padding:4px; }
+  .rpart {
+    min-width:40px; text-align:center;
+    font:11.5px var(--mono); color:var(--muted); font-variant-numeric:tabular-nums;
+  }
+  .reader-head #rfollow { flex:0 0 auto; padding:3px 9px; font-size:12px; }
+  .reader-head #rfollow[aria-pressed=false] { opacity:.65; }
+  .reader-body {
+    position:relative; max-height:280px; overflow:auto;
+    padding:var(--s4); font-size:16.5px; line-height:1.75; scroll-behavior:smooth;
+  }
+  .reader-body p { margin:0 0 .55em; }
+  .reader-body p:last-child { margin-bottom:0; }
+  .reader-body span {
+    border-radius:3px;
+    transition:background var(--t-fast) linear, color var(--t-fast) linear;
+  }
+  .reader-body span.done { color:var(--muted); }
+  /* weight and underline as well as colour, so the position is not colour-only */
+  .reader-body span.now {
+    background:var(--accent); color:var(--accent-fg);
+    font-weight:600; text-decoration:underline; text-underline-offset:3px;
+  }
+
+  /* ── footer ────────────────────────────────────────────────── */
+  footer {
+    max-width:1440px; margin:0 auto; padding:var(--s5) var(--s4) var(--s6);
+    color:var(--muted); font-size:12.5px;
+  }
+  footer code { background:var(--code); padding:1px 5px; border-radius:4px; font-family:var(--mono); }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration:.01ms !important; animation-iteration-count:1 !important;
+      transition-duration:.01ms !important; scroll-behavior:auto !important;
+    }
+    .teleprompter { scroll-behavior:auto; }
+  }
 </style>
 </head>
 <body>
 
+<a class="skip" href="#main">Skip to content</a>
+
 <header>
-  <h1>Breeze TTS 2</h1>
-  <span class="sub">Apple Silicon · MLX</span>
-  <span class="pill" id="pill"><span class="dot" id="dot"></span><span id="pilltext">checking…</span></span>
+  <div class="brand">
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false">
+      <path d="M2 10v3"/><path d="M6 6v11"/><path d="M10 3v18"/><path d="M14 8v7"/><path d="M18 5v13"/><path d="M22 10v3"/>
+    </svg>
+    <span class="brand-text">
+      <h1>Breeze TTS 2</h1>
+      <span class="sub">Apple Silicon · MLX</span>
+    </span>
+  </div>
+  <span class="pill" id="pill" role="status" aria-live="polite">
+    <span class="dot" id="dot" aria-hidden="true"></span><span id="pilltext">checking…</span>
+  </span>
 </header>
 
-<main>
-  <!-- ── SCRIPT ─────────────────────────────────────────────── -->
-  <div>
-    <section class="panel">
-      <h2>Script</h2>
+<main id="main">
+  <div class="col">
+    <div class="modes" role="tablist" aria-label="What to read">
+      <button type="button" role="tab" id="tab-speak" aria-selected="true" aria-controls="pane-speak">Speak</button>
+      <button type="button" role="tab" id="tab-book" aria-selected="false" aria-controls="pane-book" tabindex="-1">Read a book</button>
+    </div>
+
+    <!-- ── 1. SCRIPT ──────────────────────────────────────────── -->
+    <section class="panel" id="pane-speak" role="tabpanel" aria-labelledby="h-script">
+      <h2 id="h-script">1 · Script</h2>
+      <label for="text">What to say</label>
       <textarea id="text" rows="7" placeholder="Type what you want spoken…"></textarea>
-      <div class="row" style="margin-top:8px">
-        <span class="muted" id="counter">0 / 10000</span>
-        <span class="muted" style="text-align:right">click to insert a vocal event</span>
+      <div class="meta">
+        <span class="count" id="counter">0 / 10000</span>
+        <span>chips insert a vocal event at the cursor</span>
       </div>
-      <div class="chips" id="events"></div>
-      <div class="chips" id="presets"></div>
+      <div class="chipgroup">
+        <div class="lbl" id="lbl-events">Vocal events — match the language of your text</div>
+        <div class="chips" id="events" role="group" aria-labelledby="lbl-events"></div>
+      </div>
+      <div class="chipgroup">
+        <div class="lbl" id="lbl-presets">Preset lines</div>
+        <div class="chips" id="presets" role="group" aria-labelledby="lbl-presets"></div>
+      </div>
     </section>
 
-    <section class="panel">
-      <h2>Output</h2>
-      <div class="row">
-        <button class="primary" id="go">Generate</button>
-        <button id="save" disabled>Download WAV</button>
-      </div>
-      <div class="muted" style="margin-top:6px">⌘↵ to generate · one request at a time</div>
-      <div class="msg" id="msg"></div>
-      <audio id="player" controls preload="none"></audio>
-      <div class="stat">
-        <div>first audio<b id="s-ttfa">—</b></div>
-        <div>audio length<b id="s-len">—</b></div>
-        <div>generated in<b id="s-gen">—</b></div>
-        <div>real-time factor<b id="s-rtf">—</b></div>
-      </div>
-      <details>
-        <summary>reproduce with curl</summary>
-        <pre id="curl">generate something first</pre>
-        <div class="chips"><button id="copycurl">Copy</button></div>
-      </details>
-    </section>
-  </div>
+    <!-- ── 1b. BOOK ───────────────────────────────────────────── -->
+    <section class="panel" id="pane-book" role="tabpanel" aria-labelledby="h-book" hidden>
+      <h2 id="h-book">1 · Book</h2>
+      <button type="button" class="drop" id="bookdrop">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/>
+          <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/>
+        </svg>
+        <span>Drop an EPUB here, or click to choose</span>
+        <span class="muted">text EPUB · opened in this page, never uploaded</span>
+      </button>
+      <input type="file" id="bookfile" accept=".epub,application/epub+zip" hidden>
 
-  <!-- ── VOICE + DELIVERY ───────────────────────────────────── -->
-  <div>
-    <section class="panel">
-      <h2>Voice</h2>
-      <div class="sources">
-        <label class="srcopt"><input type="radio" name="src" value="none" checked> No reference <span class="muted">— voice design</span></label>
-        <label class="srcopt"><input type="radio" name="src" value="saved"> Saved voice</label>
-        <div class="sub-field" id="savedwrap" style="display:none">
-          <div class="row"><select id="savedsel"></select><button id="refresh" style="flex:0 0 auto">↻</button></div>
+      <div id="bookmeta" hidden>
+        <div class="bookhead">
+          <div class="bookident">
+            <div class="btitle" id="btitle"></div>
+            <div class="muted" id="bmeta"></div>
+          </div>
+          <button type="button" class="btn-sm" id="bopen">Open another</button>
         </div>
-        <label class="srcopt"><input type="radio" name="src" value="upload"> Upload a reference <span class="muted">— voice clone</span></label>
-        <label class="srcopt"><input type="radio" name="src" value="record"> Record a reference <span class="muted">— read a script aloud</span></label>
-        <div class="sub-field" id="uploadwrap" style="display:none">
-          <div class="drop" id="drop">drop a WAV / FLAC / OGG here, or click to choose</div>
-          <input type="file" id="file" accept=".wav,.flac,.ogg,audio/*" hidden>
-        </div>
-        <div class="sub-field" id="recordwrap" style="display:none">
-          <div class="tp-head">
-            <span>Read this aloud — your transcript is captured for you</span>
-            <span class="tp-tools">
-              <select id="tplang"><option value="en">English</option><option value="zh">中文</option></select>
-              <button id="tpshuffle" title="use a different passage">↻</button>
+        <ol class="chapters" id="chapters" aria-label="Chapters"></ol>
+        <div class="booknow" id="bnow" role="status" aria-live="polite">Pick a chapter, then press Read.</div>
+        <div class="bar" id="bbar" role="progressbar" aria-label="Book progress" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="bprogress"></i></div>
+
+        <div class="reader" id="reader">
+          <div class="reader-head">
+            <span class="rtitle" id="rchapter">Text</span>
+            <span class="reader-tools">
+              <button type="button" class="btn-icon" id="pprev" aria-label="Previous part" title="Previous part" disabled>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <polyline points="15 18 9 12 15 6"/>
+                </svg>
+              </button>
+              <span class="rpart" id="rpart" aria-label="Part">1 / 1</span>
+              <button type="button" class="btn-icon" id="pnext" aria-label="Next part" title="Next part" disabled>
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <polyline points="9 18 15 12 9 6"/>
+                </svg>
+              </button>
+              <button type="button" id="rfollow" aria-pressed="true"
+                      title="Scroll the text with the audio">Follow</button>
             </span>
           </div>
-          <div class="teleprompter" id="tp"></div>
-          <div class="rec-row">
-            <button id="recbtn">● Record</button>
-            <button id="recstop" disabled>■ Stop</button>
-            <span class="muted" id="rectime">0.0 / 28 s</span>
-            <span class="level" title="input level"><i id="levelbar"></i></span>
-          </div>
-          <div class="bar"><i id="recbar"></i></div>
-          <div class="muted" id="recinfo" style="margin-top:6px">
-            Aim for 15–25 s. Quiet room, no music, speak naturally and don't rush.
-          </div>
-          <div id="microw" style="margin-top:6px"></div>
+          <div class="reader-body" id="rbody" aria-label="Chapter text" tabindex="0"></div>
         </div>
-        <div class="sub-field" id="refwrap" style="display:none">
-          <label for="reft">Exact transcript of the reference <span class="muted">— edit if you deviated</span></label>
-          <textarea id="reft" rows="3" placeholder="Every word spoken in the clip, verbatim."></textarea>
-          <div class="muted" id="fileinfo" style="margin-top:6px"></div>
-          <audio id="refplay" controls style="display:none;margin-top:6px;width:100%"></audio>
+
+        <div class="muted" style="margin-top:8px">
+          Audio streams sentence by sentence, buffered ahead while it plays. The voice is
+          fixed when playback starts, so a whole book keeps one speaker.
         </div>
-      </div>
-      <div style="margin-top:14px">
-        <label for="instr">Instruction <span class="muted">— optional; adds voice direction</span></label>
-        <textarea id="instr" rows="3" placeholder="e.g. Speak slowly with a restrained, serious tone."></textarea>
-        <div class="chips" id="instrpresets"></div>
       </div>
     </section>
 
-    <section class="panel">
-      <h2>Delivery</h2>
-      <label for="cfg">Instruction strength (cfg_scale) — <span id="cfgval">1.0</span></label>
+    <!-- ── 2. VOICE ───────────────────────────────────────────── -->
+    <section class="panel" aria-labelledby="h-voice">
+      <h2 id="h-voice">2 · Voice</h2>
+      <fieldset class="srclist">
+        <legend class="sr-only">Voice source</legend>
+        <label class="srcopt">
+          <input type="radio" name="src" value="none" checked>
+          <span class="srcbody">
+            <span class="srctitle">No reference</span>
+            <span class="srcdesc">Voice design — pick a voice from a description</span>
+          </span>
+        </label>
+
+        <label class="srcopt">
+          <input type="radio" name="src" value="saved">
+          <span class="srcbody">
+            <span class="srctitle">Saved voice</span>
+            <span class="srcdesc">Reuse something already in the library</span>
+          </span>
+        </label>
+        <div class="sub-field" id="savedwrap" style="display:none">
+          <label for="savedsel">Voice from the library</label>
+          <div class="row">
+            <select id="savedsel"></select>
+            <button type="button" class="btn-icon" id="refresh" aria-label="Refresh voice list" title="Refresh voice list">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+                <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <label class="srcopt">
+          <input type="radio" name="src" value="upload">
+          <span class="srcbody">
+            <span class="srctitle">Upload a reference</span>
+            <span class="srcdesc">Voice clone — needs the clip and its exact transcript</span>
+          </span>
+        </label>
+        <div class="sub-field" id="uploadwrap" style="display:none">
+          <button type="button" class="drop" id="drop">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" x2="12" y1="3" y2="15"/>
+            </svg>
+            <span>Drop a WAV / FLAC / OGG here, or click to choose</span>
+            <span class="muted">≤ 30 s · ≤ 25 MiB</span>
+          </button>
+          <input type="file" id="file" accept=".wav,.flac,.ogg,audio/*" hidden>
+        </div>
+
+        <label class="srcopt">
+          <input type="radio" name="src" value="record">
+          <span class="srcbody">
+            <span class="srctitle">Record a reference</span>
+            <span class="srcdesc">Read a script aloud — the transcript is written for you</span>
+          </span>
+        </label>
+        <div class="sub-field" id="recordwrap" style="display:none">
+          <div class="tp-head">
+            <span id="lbl-tp">Read this aloud — your transcript is captured for you</span>
+            <span class="tp-tools">
+              <label class="sr-only" for="tplang">Passage language</label>
+              <select id="tplang">
+                <option value="en">English</option>
+                <option value="zh">中文</option>
+              </select>
+              <button type="button" class="btn-icon" id="tpshuffle" aria-label="Use a different passage" title="Use a different passage">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                  <path d="M3 12a9 9 0 0 1 9-9 9.75 9.75 0 0 1 6.74 2.74L21 8"/><path d="M21 3v5h-5"/>
+                  <path d="M21 12a9 9 0 0 1-9 9 9.75 9.75 0 0 1-6.74-2.74L3 16"/><path d="M8 16H3v5"/>
+                </svg>
+              </button>
+            </span>
+          </div>
+          <div class="teleprompter" id="tp" aria-labelledby="lbl-tp"></div>
+          <div class="rec-row">
+            <button type="button" id="recbtn">
+              <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+                <path d="M12 19v3"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><rect x="9" y="2" width="6" height="13" rx="3"/>
+              </svg>
+              Record
+            </button>
+            <button type="button" id="recstop" disabled>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+                <rect width="16" height="16" x="4" y="4" rx="2"/>
+              </svg>
+              Stop
+            </button>
+            <span class="muted" id="rectime">0.0 / 28 s</span>
+            <span class="level" role="img" aria-label="Microphone input level"><i id="levelbar"></i></span>
+          </div>
+          <div class="bar" role="progressbar" aria-label="Recording elapsed" aria-valuemin="0" aria-valuemax="100"><i id="recbar"></i></div>
+          <div class="muted" id="recinfo" style="margin-top:8px">
+            Aim for 15–25 s. Quiet room, no music, speak naturally and don't rush.
+          </div>
+          <div id="microw" style="margin-top:8px"></div>
+        </div>
+
+        <div class="sub-field" id="refwrap" style="display:none">
+          <label for="reft">Exact transcript of the reference</label>
+          <textarea id="reft" rows="3" placeholder="Every word spoken in the clip, verbatim."></textarea>
+          <div class="muted" style="margin-top:6px">
+            Edit if you deviated — the clone is only as good as this text.
+          </div>
+          <div class="muted" id="fileinfo" style="margin-top:6px"></div>
+          <audio id="refplay" controls style="display:none"></audio>
+        </div>
+      </fieldset>
+
+      <div id="genderwrap" style="display:none;margin-top:var(--s4)">
+        <label for="gender">Gender <span class="fld-note">— voice design only</span></label>
+        <select id="gender">
+          <option value="">Auto</option>
+          <option value="female">Female</option>
+          <option value="male">Male</option>
+        </select>
+        <div class="muted" style="margin-top:6px">
+          Folded into the instruction. Needs cfg_scale 2–4 to land.
+        </div>
+      </div>
+
+      <div style="margin-top:var(--s4)">
+        <label for="instr">Instruction <span class="fld-note">— optional; adds voice direction</span></label>
+        <textarea id="instr" rows="3" placeholder="e.g. Speak slowly with a restrained, serious tone."></textarea>
+        <div class="chipgroup">
+          <div class="lbl" id="lbl-instr">Presets</div>
+          <div class="chips" id="instrpresets" role="group" aria-labelledby="lbl-instr"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 3. DELIVERY ────────────────────────────────────────── -->
+    <section class="panel" aria-labelledby="h-delivery">
+      <h2 id="h-delivery">3 · Delivery</h2>
+      <label for="cfg">Instruction strength (cfg_scale) — <span class="cfgval" id="cfgval">1.0</span></label>
       <input type="range" id="cfg" min="1" max="4" step="0.5" value="1">
-      <div class="muted" style="margin-top:4px">
+      <div class="ticks" aria-hidden="true"><span>1</span><span>2</span><span>3</span><span>4</span></div>
+      <div class="muted" style="margin-top:8px">
         1 = plain. Higher follows the instruction more strongly. Voice design and direction usually want 2–4.
       </div>
-      <div class="row" style="margin-top:12px">
-        <div><label for="seed">Seed</label><input type="text" id="seed" value="42"></div>
-        <button id="dice" style="flex:0 0 auto">🎲</button>
+      <div class="row" style="margin-top:var(--s4)">
+        <div>
+          <label for="seed">Seed <span class="fld-note">— same seed and settings reproduce the same take</span></label>
+          <input type="text" id="seed" value="42" inputmode="numeric">
+        </div>
+        <button type="button" class="btn-icon fixed" id="dice" aria-label="Randomise seed" title="Randomise seed">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <rect width="12" height="12" x="2" y="10" rx="2" ry="2"/>
+            <path d="m17.92 14 3.5-3.5a2.24 2.24 0 0 0 0-3l-5-4.92a2.24 2.24 0 0 0-3 0L10 6"/>
+            <path d="M6 18h.01"/><path d="M10 14h.01"/><path d="M15 6h.01"/><path d="M18 9h.01"/>
+          </svg>
+        </button>
       </div>
       <details>
-        <summary>advanced sampling</summary>
+        <summary>Advanced sampling</summary>
         <div class="adv">
           <div><label for="temperature">temperature</label><input type="number" id="temperature" step="0.05" min="0" max="10" placeholder="default"></div>
           <div><label for="topk">top_k</label><input type="number" id="topk" step="1" min="0" max="10000" placeholder="default"></div>
@@ -243,21 +737,118 @@
         </div>
       </details>
     </section>
-  </div>
-</main>
 
-<section class="panel" style="margin:16px 20px 0">
-  <h2>Voice library</h2>
-  <table>
-    <thead><tr><th>id</th><th>length</th><th>kind</th><th>transcript</th><th></th></tr></thead>
-    <tbody id="vrows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
-  </table>
-  <div class="row" style="margin-top:12px">
-    <div><label for="vname">Save the current reference as a named voice</label><input type="text" id="vname" placeholder="alice"></div>
-    <button id="vsave" style="flex:0 0 auto">Save voice</button>
+    <div class="actionbar" id="bar-speak">
+      <button type="button" class="btn-primary" id="go">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+          <polygon points="6 3 20 12 6 21 6 3"/>
+        </svg>
+        <svg class="spin" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" aria-hidden="true" focusable="false">
+          <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+        </svg>
+        <span class="btn-label">Generate</span>
+      </button>
+      <span class="hint"><kbd>⌘</kbd><kbd>↵</kbd> to generate · one request at a time</span>
+    </div>
+
+    <div class="actionbar" id="bar-book" hidden>
+      <button type="button" class="btn-primary" id="bread">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+          <polygon points="6 3 20 12 6 21 6 3"/>
+        </svg>
+        <span>Read aloud</span>
+      </button>
+      <button type="button" id="bpause" disabled>
+        <svg width="15" height="15" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+          <rect x="6" y="4" width="4" height="16" rx="1"/><rect x="14" y="4" width="4" height="16" rx="1"/>
+        </svg>
+        <span>Pause</span>
+      </button>
+      <button type="button" id="bstop" disabled>
+        <svg width="13" height="13" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true" focusable="false">
+          <rect x="5" y="5" width="14" height="14" rx="2"/>
+        </svg>
+        Stop
+      </button>
+      <button type="button" class="btn-icon" id="bprev" aria-label="Previous chapter" title="Previous chapter" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <polyline points="15 18 9 12 15 6"/>
+        </svg>
+      </button>
+      <button type="button" class="btn-icon" id="bnext" aria-label="Next chapter" title="Next chapter" disabled>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+          <polyline points="9 18 15 12 9 6"/>
+        </svg>
+      </button>
+      <button type="button" id="bsave" disabled title="Re-renders this chapter into one WAV">Save chapter</button>
+      <span class="hint">streams sentence by sentence · voice fixed at start</span>
+    </div>
   </div>
-  <div class="muted" style="margin-top:6px">Letters, digits, dash and underscore. Named voices persist across restarts; unnamed (v_…) ones live in memory.</div>
-</section>
+
+  <!-- ── OUTPUT ───────────────────────────────────────────────── -->
+  <aside class="col col-rail">
+    <section class="panel" aria-labelledby="h-output">
+      <h2 id="h-output">Output</h2>
+      <div class="msg" id="msg" role="alert"></div>
+      <audio id="player" class="speak-only" controls preload="none"></audio>
+      <div class="row speak-only" style="margin-top:var(--s3)">
+        <button type="button" id="save" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" x2="12" y1="15" y2="3"/>
+          </svg>
+          Download WAV
+        </button>
+      </div>
+      <div class="saveprog" id="saveprog" hidden>
+        <div class="saveprog-top">
+          <span id="savetext">Saving…</span>
+          <button type="button" id="savecancel">Cancel</button>
+        </div>
+        <div class="bar" id="savebarwrap" role="progressbar" aria-label="Chapter save progress"
+             aria-valuemin="0" aria-valuemax="100" aria-valuenow="0"><i id="savebar"></i></div>
+        <div class="muted eta" id="saveeta"></div>
+      </div>
+      <div class="stat speak-only">
+        <div>first audio<b id="s-ttfa">—</b></div>
+        <div>audio length<b id="s-len">—</b></div>
+        <div>generated in<b id="s-gen">—</b></div>
+        <div>real-time factor<b id="s-rtf">—</b></div>
+      </div>
+      <details class="speak-only">
+        <summary>Reproduce with curl</summary>
+        <pre id="curl">generate something first</pre>
+        <div class="chips" style="margin-top:var(--s2)">
+          <button type="button" id="copycurl">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+              <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+              <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+            </svg>
+            Copy
+          </button>
+        </div>
+      </details>
+    </section>
+  </aside>
+
+  <!-- ── VOICE LIBRARY ────────────────────────────────────────── -->
+  <section class="panel lib" aria-labelledby="h-lib">
+    <h2 id="h-lib">Voice library</h2>
+    <table>
+      <thead><tr><th>id</th><th>length</th><th>kind</th><th>transcript</th><th><span class="sr-only">actions</span></th></tr></thead>
+      <tbody id="vrows"><tr><td colspan="5" class="muted">loading…</td></tr></tbody>
+    </table>
+    <div class="row" style="margin-top:var(--s4)">
+      <div>
+        <label for="vname">Save the current reference as a named voice</label>
+        <input type="text" id="vname" placeholder="alice">
+      </div>
+      <button type="button" class="fixed" id="vsave">Save voice</button>
+    </div>
+    <div class="muted" style="margin-top:6px">
+      Letters, digits, dash and underscore. Named voices persist across restarts; unnamed (v_…) ones live in memory.
+    </div>
+  </section>
+</main>
 
 <footer>
   Talks to the Breeze TTS server on <code id="apishow"></code>. Loopback only, no authentication.
@@ -269,6 +860,7 @@
 
 const API = (new URLSearchParams(location.search).get("api") || "http://127.0.0.1:8080").replace(/\/+$/, "");
 const $ = (id) => document.getElementById(id);
+const REDUCED = window.matchMedia("(prefers-reduced-motion: reduce)");
 
 const EN_EVENTS = ["(sigh)", "(laugh)", "(cough)", "(clears throat)"];
 const ZH_EVENTS = ["[叹气]", "[笑]", "[咳嗽]", "[清嗓子]"];
@@ -283,6 +875,12 @@ const INSTR_PRESETS = [
   "Speak playfully, with a teasing, amused lilt.",
   "Whisper softly and intimately.",
 ];
+// Voice design has no gender field of its own: the model reads gender out of the
+// instruction, so these phrases are folded in ahead of whatever the user wrote.
+const GENDER_PHRASES = {
+  female: "A female voice.",
+  male: "A male voice.",
+};
 
 let voices = [];
 let refFile = null;
@@ -290,6 +888,18 @@ let refVoiceId = null;   // registered unnamed voice for the current reference
 let refOrigin = null;    // "upload" | "record" — so a reshuffled script can invalidate a recording
 let refUrl = null;       // object URL for the reference preview
 let currentUrl = null;
+
+// Book mode state. `run` is a token: every start or stop bumps it, so a request
+// left over from a superseded chapter can tell that it no longer owns the player.
+let generating = false;
+const B = {
+  book: null, index: 0, chunks: [], chunk: 0,
+  run: 0, playing: false, paused: false, base: null, cps: 14,
+  anchorId: null, anchorSig: null,
+  seg: 0, segs: [], segPrefix: [], segChars: 0, segDur: {},
+  segUrls: {}, segPending: {}, segCtls: {},
+};
+const BOOK_CHUNK_CHARS = 6000;   // ~7 minutes of audio per request
 
 /* ── small helpers ─────────────────────────────────────────── */
 function show(kind, text) {
@@ -299,6 +909,16 @@ function show(kind, text) {
 }
 function hide() { $("msg").className = "msg"; }
 function err(e) { show("err", String(e && e.message ? e.message : e)); }
+
+/* Generate doubles as the in-flight indicator: disabled + spinning + relabelled. */
+function setBusy(on) {
+  generating = on;
+  const b = $("go");
+  b.disabled = on || B.playing;
+  b.setAttribute("aria-busy", on ? "true" : "false");
+  const label = b.querySelector(".btn-label");
+  if (label) label.textContent = on ? "Generating…" : "Generate";
+}
 
 async function apiErr(r) {
   try { const j = await r.json(); return j.error || r.status; }
@@ -333,22 +953,27 @@ count();
 
 for (const ev of [...EN_EVENTS, ...ZH_EVENTS]) {
   const b = document.createElement("button");
+  b.type = "button";
   b.textContent = ev;
   b.onclick = () => insertAtCursor(textEl, ev + " ");
   $("events").appendChild(b);
 }
 PROMPTS.forEach((p, i) => {
   const b = document.createElement("button");
+  b.type = "button";
   b.textContent = "preset " + (i + 1);
   b.title = p;
+  b.setAttribute("aria-label", "Preset line " + (i + 1) + ": " + p);
   b.onclick = () => { textEl.value = p; count(); };
   $("presets").appendChild(b);
 });
 const instrEl = $("instr");
 INSTR_PRESETS.forEach((p) => {
   const b = document.createElement("button");
+  b.type = "button";
   b.textContent = p.length > 34 ? p.slice(0, 32) + "…" : p;
   b.title = p;
+  b.setAttribute("aria-label", p);
   b.onclick = () => { instrEl.value = p; };
   $("instrpresets").appendChild(b);
 });
@@ -358,16 +983,19 @@ function source() {
   return document.querySelector('input[name="src"]:checked').value;
 }
 document.querySelectorAll('input[name="src"]').forEach((r) => {
-  r.addEventListener("change", () => {
-    const s = source();
-    $("savedwrap").style.display = s === "saved" ? "" : "none";
-    $("uploadwrap").style.display = s === "upload" ? "" : "none";
-    $("recordwrap").style.display = s === "record" ? "" : "none";
-    $("refwrap").style.display = (s === "upload" || s === "record") ? "" : "none";
-    if (s === "record" && refOrigin !== "record" && !$("reft").value.trim()) $("reft").value = passage;
-    hide();
-  });
+  r.addEventListener("change", applySource);
 });
+function applySource() {
+  const s = source();
+  $("savedwrap").style.display = s === "saved" ? "" : "none";
+  $("uploadwrap").style.display = s === "upload" ? "" : "none";
+  $("recordwrap").style.display = s === "record" ? "" : "none";
+  $("refwrap").style.display = (s === "upload" || s === "record") ? "" : "none";
+  // Gender is a voice-design property: a reference clip already fixes the voice.
+  $("genderwrap").style.display = s === "none" ? "" : "none";
+  if (s === "record" && refOrigin !== "record" && !$("reft").value.trim()) $("reft").value = passage;
+  hide();
+}
 
 /* ── reference file ────────────────────────────────────────── */
 const drop = $("drop"), fileInput = $("file");
@@ -413,7 +1041,7 @@ function previewRef(file) {
   refUrl = URL.createObjectURL(file);
   const a = $("refplay");
   a.src = refUrl;
-  a.style.display = "";
+  a.style.display = "block";
 }
 
 /* ── recorder + teleprompter ───────────────────────────────── */
@@ -486,7 +1114,8 @@ function tpTick(elapsed) {
   const cur = tp.querySelector('span[data-i="' + idx + '"]');
   if (cur) {
     cur.classList.add("now");
-    tp.scrollTo({ top: cur.offsetTop - tp.clientHeight / 2, behavior: "smooth" });
+    // the highlight still moves under reduced-motion, it just doesn't glide
+    tp.scrollTo({ top: cur.offsetTop - tp.clientHeight / 2, behavior: REDUCED.matches ? "auto" : "smooth" });
   }
 }
 
@@ -497,6 +1126,7 @@ async function listMics() {
     if (devs.length < 2) return;
     const sel = document.createElement("select");
     sel.id = "mic";
+    sel.setAttribute("aria-label", "Microphone");
     devs.forEach((d, i) => {
       const o = document.createElement("option");
       o.value = d.deviceId;
@@ -562,6 +1192,7 @@ async function startRecording() {
     $("rectime").textContent = el.toFixed(1) + " / " + MAX_REC_SECONDS + " s";
     $("recbar").style.width = Math.min(100, (el / MAX_REC_SECONDS) * 100) + "%";
     $("recbar").className = el > MAX_REC_SECONDS * 0.8 ? "hot" : "";
+    $("recbar").parentElement.setAttribute("aria-valuenow", Math.round(Math.min(100, (el / MAX_REC_SECONDS) * 100)));
     tpTick(el);
     if (el >= MAX_REC_SECONDS) stopRecording();
   }, 100);
@@ -633,6 +1264,7 @@ $("tpshuffle").onclick = pickPassage;
 $("recbtn").onclick = startRecording;
 $("recstop").onclick = stopRecording;
 pickPassage();
+applySource();
 
 /* ── voice library ─────────────────────────────────────────── */
 async function loadVoices() {
@@ -653,19 +1285,21 @@ async function loadVoices() {
   const tb = $("vrows");
   tb.innerHTML = "";
   if (!voices.length) {
-    tb.innerHTML = '<tr><td colspan="5" class="muted">no voices yet — upload a reference and save it</td></tr>';
+    tb.innerHTML = '<tr><td colspan="5" class="muted empty">no voices yet — upload a reference and save it</td></tr>';
     return;
   }
   for (const v of voices) {
     const tr = document.createElement("tr");
     tr.innerHTML =
-      "<td><b>" + esc(v.id) + "</b></td>" +
-      "<td>" + (v.seconds != null ? v.seconds.toFixed(2) + " s" : "—") + "</td>" +
-      '<td><span class="badge">' + (v.saved ? "saved" : "memory") + "</span></td>" +
-      '<td class="trunc" title="' + esc(v.ref_text || "") + '">' + esc(v.ref_text || "") + "</td>" +
-      "<td></td>";
+      '<td data-label="id"><b>' + esc(v.id) + "</b></td>" +
+      '<td data-label="length">' + (v.seconds != null ? v.seconds.toFixed(2) + " s" : "—") + "</td>" +
+      '<td data-label="kind"><span class="badge">' + (v.saved ? "saved" : "memory") + "</span></td>" +
+      '<td data-label="transcript" class="trunc" title="' + esc(v.ref_text || "") + '">' + esc(v.ref_text || "") + "</td>" +
+      '<td data-label="actions" class="actions"></td>';
     const use = document.createElement("button");
-    use.textContent = "use";
+    use.type = "button";
+    use.textContent = "Use";
+    use.className = "btn-sm";
     use.onclick = () => {
       document.querySelector('input[name="src"][value="saved"]').checked = true;
       document.querySelector('input[name="src"][value="saved"]').dispatchEvent(new Event("change"));
@@ -673,8 +1307,10 @@ async function loadVoices() {
       show("info", "Using saved voice “" + v.id + "”.");
     };
     const del = document.createElement("button");
-    del.textContent = "delete";
-    del.style.marginLeft = "6px";
+    del.type = "button";
+    del.textContent = "Delete";
+    del.className = "btn-sm btn-danger";
+    del.setAttribute("aria-label", "Delete voice " + v.id);
     del.onclick = async () => {
       try {
         const r = await fetch(API + "/v1/voices/" + encodeURIComponent(v.id), { method: "DELETE" });
@@ -713,10 +1349,20 @@ $("vsave").onclick = async () => {
 };
 
 /* ── build + play ──────────────────────────────────────────── */
-function buildParams() {
+// The visible instruction box stays the user's own direction; the gender phrase is
+// prepended only on the way out, so nothing is hidden from the curl panel below.
+function composedInstruction() {
+  const base = instrEl.value.trim();
+  const g = $("gender").value;
+  if (source() !== "none" || !g) return base;
+  const phrase = GENDER_PHRASES[g];
+  return base ? phrase + " " + base : phrase;
+}
+
+function buildParams(text = textEl.value.trim()) {
   const p = new URLSearchParams();
-  p.set("text", textEl.value.trim());
-  const ins = instrEl.value.trim();
+  p.set("text", text);
+  const ins = composedInstruction();
   if (ins) p.set("instruction", ins);
   p.set("cfg_scale", $("cfg").value);
   p.set("seed", $("seed").value.trim() || "42");
@@ -788,16 +1434,29 @@ player.addEventListener("progress", () => {
 player.addEventListener("playing", markFirstAudio);
 player.addEventListener("error", async () => {
   if (!activeUrl) return;
+  const url = activeUrl;
   stopTimer();
-  $("go").disabled = false;
+  setBusy(false);
+  if (B.playing) stopBook();
   try {
-    const r = await fetch(activeUrl);          // the failure returns immediately; no generation
+    const r = await fetch(url);                // the failure returns immediately; no generation
     show("err", "Server rejected the request: " + (await apiErr(r)));
   } catch {
     show("err", "Playback failed and the reason could not be read. Check the server terminal.");
   }
 });
-player.addEventListener("ended", () => { stopTimer(); finish(); });
+player.addEventListener("ended", () => {
+  if (B.playing && !B.paused) return bookNextSeg();
+  stopTimer(); finish();
+});
+player.addEventListener("timeupdate", () => {
+  if (!B.playing) return;
+  updateProgress();          // the highlight is driven by the queue, not by time
+});
+// The native controls can resume a paused book too; keep our label in step.
+player.addEventListener("play", () => {
+  if (B.playing && B.paused) { B.paused = false; updateBookUI(); }
+});
 
 function stopTimer() { if (genTimer) { clearInterval(genTimer); genTimer = null; } }
 function finish() {
@@ -809,24 +1468,35 @@ function finish() {
     $("s-gen").textContent = gen.toFixed(2) + " s";
     if (len > 0) $("s-rtf").textContent = (gen / len).toFixed(2);
   }
-  $("go").disabled = false;
+  setBusy(false);
+}
+
+async function applyVoice(p) {
+  if (source() === "saved") {
+    const id = $("savedsel").value;
+    if (!id) throw new Error("No saved voice selected.");
+    p.set("voice_id", id);
+    return true;
+  }
+  // A recorded reference is the same kind of thing as an uploaded one: it needs to be
+  // registered once, then every request reuses its voice_id.
+  if (source() === "upload" || source() === "record") {
+    p.set("voice_id", await ensureRefVoice());
+    return true;
+  }
+  return false;
 }
 
 async function generate() {
   if ($("go").disabled) return;
+  if (B.playing) return err("Stop the book before generating a one-off line.");
+  if (bookSaving) return err("A chapter is being saved — wait for it to finish.");
   hide(); resetStats();
   if (!textEl.value.trim()) return err("Enter some text to speak.");
-  $("go").disabled = true;
+  setBusy(true);
   try {
     const p = buildParams();
-    let usesRef = false;
-    if (source() === "saved") {
-      const id = $("savedsel").value;
-      if (!id) throw new Error("No saved voice selected.");
-      p.set("voice_id", id); usesRef = true;
-    } else if (source() === "upload") {
-      p.set("voice_id", await ensureRefVoice()); usesRef = true;
-    }
+    const usesRef = await applyVoice(p);
     const url = API + "/v1/audio/speech.wav?" + p.toString() + "&_=" + Date.now();
     $("curl").textContent = buildCurl(url, usesRef);
     activeUrl = url;
@@ -838,7 +1508,7 @@ async function generate() {
       if (lastProgress && performance.now() - lastProgress > 400) { stopTimer(); finish(); }
     }, 200);
   } catch (e) {
-    $("go").disabled = false;
+    setBusy(false);
     err(e);
   }
 }
@@ -853,10 +1523,1060 @@ $("copycurl").onclick = async () => {
   try { await navigator.clipboard.writeText($("curl").textContent); show("info", "Copied."); }
   catch { err("Clipboard blocked; select the text manually."); }
 };
-$("cfg").addEventListener("input", () => { $("cfgval").textContent = parseFloat($("cfg").value).toFixed(1); });
+/* ── book mode ─────────────────────────────────────────────── */
+let MODE = "speak";
+let bookSaving = false;
+let saveCtl = null;
+let savePaint = 0;
+let savePaintTimer = null;
+let savePaintState = null;
+let readerSpans = [], readerIdx = -1, readerFollow = true;
+
+function setMode(m) {
+  MODE = m;
+  const book = m === "book";
+  $("tab-speak").setAttribute("aria-selected", String(!book));
+  $("tab-book").setAttribute("aria-selected", String(book));
+  $("tab-speak").tabIndex = book ? -1 : 0;
+  $("tab-book").tabIndex = book ? 0 : -1;
+  $("pane-speak").hidden = book;
+  $("pane-book").hidden = !book;
+  $("bar-speak").hidden = book;
+  $("bar-book").hidden = !book;
+  // The rail's player, stats and curl belong to one-off speech. In book mode the
+  // sentence audio is an internal blob, so showing a new 5-second track every
+  // sentence would just be noise.
+  document.querySelectorAll(".speak-only").forEach((el) => { el.hidden = book; });
+  updateBookUI();
+  hide();
+}
+$("tab-speak").onclick = () => setMode("speak");
+$("tab-book").onclick = () => setMode("book");
+document.querySelector(".modes").addEventListener("keydown", (e) => {
+  if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+  e.preventDefault();
+  const next = MODE === "speak" ? "book" : "speak";
+  setMode(next);
+  $(next === "book" ? "tab-book" : "tab-speak").focus();
+});
+
+/* EPUB in the browser: a ZIP reader (central directory + DecompressionStream),
+   then container.xml -> OPF spine -> XHTML text. No library, no upload. */
+/* @epub-core */
+const EPUB_SKIP = new Set(["script", "style", "head", "title", "sup", "svg", "math", "rt", "rp"]);
+const EPUB_BLOCK = new Set(["p", "div", "br", "hr", "li", "ul", "ol", "dl", "dt", "dd",
+  "blockquote", "pre", "section", "article", "header", "footer", "aside", "figure",
+  "figcaption", "table", "tr", "td", "th", "h1", "h2", "h3", "h4", "h5", "h6"]);
+const EPUB_HEAD = { h1: 1, h2: 2, h3: 3, h4: 4, h5: 5, h6: 6 };
+
+function epubClean(s) {
+  return String(s)
+    .replace(/[\u00ad\u200b\ufeff]/g, "")
+    .replace(/\u00a0/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function zipIndex(buf) {
+  const dv = new DataView(buf);
+  let eocd = -1, count = 0, cdOff = 0;
+  for (let i = buf.byteLength - 22; i >= Math.max(0, buf.byteLength - 65558); i--) {
+    if (dv.getUint32(i, true) !== 0x06054b50) continue;
+    const c = dv.getUint16(i + 10, true);
+    const o = dv.getUint32(i + 16, true);
+    // A ZIP comment can contain the signature, so trust only a record whose
+    // central directory actually starts with a central-directory entry.
+    if (c === 0 || (o + 4 <= buf.byteLength && dv.getUint32(o, true) === 0x02014b50)) {
+      eocd = i; count = c; cdOff = o; break;
+    }
+  }
+  if (eocd < 0) throw new Error("Not an EPUB: no ZIP central directory found.");
+  if (count === 0xffff || cdOff === 0xffffffff) throw new Error("Zip64 EPUBs are not supported.");
+  let off = cdOff;
+  const entries = new Map();
+  for (let n = 0; n < count; n++) {
+    if (dv.getUint32(off, true) !== 0x02014b50) {
+      throw new Error("Damaged EPUB: bad central directory entry.");
+    }
+    const method = dv.getUint16(off + 10, true);
+    const csize = dv.getUint32(off + 20, true);
+    const nlen = dv.getUint16(off + 28, true);
+    const elen = dv.getUint16(off + 30, true);
+    const clen = dv.getUint16(off + 32, true);
+    const local = dv.getUint32(off + 42, true);
+    if (csize === 0xffffffff || local === 0xffffffff) {
+      throw new Error("Zip64 EPUBs are not supported.");
+    }
+    const name = new TextDecoder().decode(new Uint8Array(buf, off + 46, nlen));
+    entries.set(name.replace(/^\.\//, ""), { method, csize, local });
+    off += 46 + nlen + elen + clen;
+  }
+  return entries;
+}
+
+async function zipBytes(buf, entries, name) {
+  const key = String(name).replace(/^\.\//, "");
+  const e = entries.get(key);
+  if (!e) return null;
+  const dv = new DataView(buf);
+  if (dv.getUint32(e.local, true) !== 0x04034b50) {
+    throw new Error("Damaged EPUB: bad local header for " + key);
+  }
+  const nlen = dv.getUint16(e.local + 26, true);
+  const elen = dv.getUint16(e.local + 28, true);
+  const start = e.local + 30 + nlen + elen;
+  const raw = new Uint8Array(buf, start, e.csize);
+  if (e.method === 0) return raw.slice();
+  if (e.method !== 8) throw new Error("Unsupported ZIP compression in " + key);
+  if (typeof DecompressionStream === "undefined") {
+    throw new Error("This browser cannot inflate ZIP entries; try a current Safari, Chrome or Firefox.");
+  }
+  const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream("deflate-raw"));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+function epubXml(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xml");
+  if (doc.getElementsByTagNameNS("*", "parsererror").length) {
+    throw new Error("Damaged XML in the EPUB.");
+  }
+  return doc;
+}
+
+function epubHtml(text) {
+  const doc = new DOMParser().parseFromString(text, "application/xhtml+xml");
+  if (!doc.getElementsByTagNameNS("*", "parsererror").length) return doc;
+  // Plenty of real EPUBs are not well-formed XHTML; the HTML parser is forgiving.
+  return new DOMParser().parseFromString(text, "text/html");
+}
+
+function epubAll(node, name) {
+  const out = [];
+  for (const el of node.getElementsByTagName("*")) if (el.localName === name) out.push(el);
+  return out;
+}
+
+function epubResolve(baseFile, href) {
+  const raw = String(href || "").split("#")[0];
+  let decoded = raw;
+  try { decoded = decodeURIComponent(raw); } catch { /* keep the raw href */ }
+  const slash = baseFile.lastIndexOf("/");
+  const baseDir = slash >= 0 ? baseFile.slice(0, slash) : "";
+  const parts = (baseDir ? baseDir.split("/") : []).concat(decoded.split("/"));
+  const out = [];
+  for (const p of parts) {
+    if (!p || p === ".") continue;
+    if (p === "..") out.pop();
+    else out.push(p);
+  }
+  return out.join("/");
+}
+
+function epubExtract(doc) {
+  const paras = [];
+  const headings = [];
+  let buf = "";
+  let head = null;
+  const flush = () => { const t = epubClean(buf); if (t) paras.push(t); buf = ""; };
+  const walk = (node) => {
+    if (node.nodeType === 3) {
+      buf += node.nodeValue;
+      if (head) head.text += node.nodeValue;
+      return;
+    }
+    if (node.nodeType !== 1) return;
+    const tag = String(node.localName || node.nodeName).toLowerCase();
+    if (EPUB_SKIP.has(tag)) return;
+    if (EPUB_HEAD[tag]) head = { level: EPUB_HEAD[tag], text: "" };
+    if (EPUB_BLOCK.has(tag)) flush();
+    for (const child of node.childNodes) walk(child);
+    if (EPUB_HEAD[tag] && head) {
+      const t = epubClean(head.text);
+      if (t) headings.push([head.level, t]);
+      head = null;
+    }
+    if (EPUB_BLOCK.has(tag)) flush();
+  };
+  walk(doc.body || doc.documentElement);
+  flush();
+  return { text: paras.join("\n\n"), headings };
+}
+
+function epubNcxTitles(doc, baseFile) {
+  const map = new Map();
+  for (const point of epubAll(doc, "navPoint")) {
+    let label = "", src = "";
+    for (const el of point.getElementsByTagName("*")) {
+      if (el.localName === "text" && !label) label = epubClean(el.textContent);
+      else if (el.localName === "content" && !src) src = el.getAttribute("src") || "";
+    }
+    if (label && src) {
+      const key = epubResolve(baseFile, src);
+      if (!map.has(key)) map.set(key, label);
+    }
+  }
+  return map;
+}
+
+function epubNavTitles(doc, baseFile) {
+  const map = new Map();
+  for (const nav of epubAll(doc, "nav")) {
+    for (const a of nav.getElementsByTagName("*")) {
+      if (a.localName !== "a") continue;
+      const href = a.getAttribute("href") || "";
+      const label = epubClean(a.textContent);
+      if (!label || !href) continue;
+      const key = epubResolve(baseFile, href);
+      if (!map.has(key)) map.set(key, label);
+    }
+  }
+  return map;
+}
+
+async function parseEpub(buf) {
+  const entries = zipIndex(buf);
+  const readText = async (name) => {
+    const b = await zipBytes(buf, entries, name);
+    return b ? new TextDecoder("utf-8").decode(b) : null;
+  };
+
+  // Font obfuscation is normal and harmless; encrypted *content* is not readable.
+  const encryption = await readText("META-INF/encryption.xml");
+  if (encryption && /\.x?html?["'<\s]/i.test(encryption)) {
+    throw new Error("This EPUB is DRM-protected, so its text cannot be read.");
+  }
+
+  const container = await readText("META-INF/container.xml");
+  if (!container) throw new Error("Not an EPUB: META-INF/container.xml is missing.");
+  const rootfile = epubAll(epubXml(container), "rootfile")
+    .find((el) => el.getAttribute("full-path"));
+  if (!rootfile) throw new Error("Not an EPUB: container.xml names no rootfile.");
+  const opfPath = rootfile.getAttribute("full-path");
+  const opfRaw = await readText(opfPath);
+  if (!opfRaw) throw new Error("The EPUB is missing its package file.");
+
+  const opf = epubXml(opfRaw);
+  const manifest = new Map();
+  let title = "", author = "";
+  for (const el of opf.getElementsByTagName("*")) {
+    if (el.localName === "item" && el.getAttribute("id")) {
+      manifest.set(el.getAttribute("id"), {
+        path: epubResolve(opfPath, el.getAttribute("href") || ""),
+        type: el.getAttribute("media-type") || "",
+        props: el.getAttribute("properties") || "",
+      });
+    } else if (el.localName === "title" && !title) {
+      title = epubClean(el.textContent);
+    } else if (el.localName === "creator" && !author) {
+      author = epubClean(el.textContent);
+    }
+  }
+
+  const spine = [];
+  for (const el of epubAll(opf, "itemref")) {
+    if ((el.getAttribute("linear") || "yes").toLowerCase() === "no") continue;
+    const item = manifest.get(el.getAttribute("idref"));
+    if (item) spine.push(item);
+  }
+
+  const toc = new Map();
+  const ncx = [...manifest.values()].find((i) => i.type === "application/x-dtbncx+xml");
+  if (ncx) {
+    const raw = await readText(ncx.path);
+    if (raw) for (const [k, v] of epubNcxTitles(epubXml(raw), ncx.path)) toc.set(k, v);
+  }
+  const nav = [...manifest.values()].find((i) => i.props.split(/\s+/).includes("nav"));
+  if (nav) {
+    const raw = await readText(nav.path);
+    if (raw) {
+      for (const [k, v] of epubNavTitles(epubHtml(raw), nav.path)) {
+        if (!toc.has(k)) toc.set(k, v);
+      }
+    }
+  }
+
+  const chapters = [];
+  let totalChars = 0;
+  for (const item of spine) {
+    if (item.type && !/x?html/.test(item.type)) continue;
+    if (!/\.x?html?$/i.test(item.path)) continue;
+    const raw = await readText(item.path);
+    if (raw == null) continue;
+    const { text, headings } = epubExtract(epubHtml(raw));
+    // An image plate has nothing to say; a short *titled* chapter is real content.
+    if (text.length < 25 && !headings.length) continue;
+    const label = toc.get(item.path) || (headings[0] && headings[0][1]) ||
+      item.path.split("/").pop();
+    totalChars += text.length;
+    chapters.push({
+      title: epubClean(label).slice(0, 120) || "Chapter " + (chapters.length + 1),
+      text, chars: text.length, before: 0,
+    });
+  }
+  if (!chapters.length) {
+    throw new Error("No readable text — this may be a comic or image-only EPUB.");
+  }
+  let before = 0;
+  for (const ch of chapters) { ch.before = before; before += ch.chars; }
+  return { title: title || "Untitled", author, chapters, totalChars };
+}
+
+// Same rules as bin/breeze-epub: paragraphs first, then sentences, then a hard cut.
+const EPUB_SENT_END = /(?:[.!?]+["”’')\]]?(?=\s|$)|[。！？…]+["”’')\]]?)/;
+
+function epubSentences(par) {
+  const re = new RegExp(EPUB_SENT_END.source, "g");
+  const out = [];
+  let start = 0, m;
+  while ((m = re.exec(par))) {
+    out.push(par.slice(start, m.index + m[0].length));
+    start = m.index + m[0].length;
+  }
+  if (start < par.length) out.push(par.slice(start));
+  return out.map((s) => s.trim()).filter(Boolean);
+}
+
+function epubHardSplit(text, limit) {
+  const out = [];
+  let buf = "";
+  for (let word of text.split(/\s+/)) {
+    if (buf.length + word.length + 1 <= limit) {
+      buf = (buf + " " + word).trim();
+    } else {
+      if (buf) out.push(buf);
+      while (word.length > limit) {
+        out.push(word.slice(0, limit));
+        word = word.slice(limit);
+      }
+      buf = word;
+    }
+  }
+  if (buf) out.push(buf);
+  return out;
+}
+
+function chunkText(text, limit = 6000) {
+  limit = Math.max(200, Math.min(limit, 10000));
+  const pieces = [];
+  let buf = "";
+  for (const raw of String(text).split("\n\n")) {
+    const par = raw.trim();
+    if (!par) continue;
+    let units = par.length <= limit ? [par] : [];
+    if (!units.length) {
+      for (const sent of epubSentences(par)) {
+        if (sent.length <= limit) units.push(sent);
+        else units.push(...epubHardSplit(sent, limit));
+      }
+    }
+    for (const unit of units) {
+      const candidate = buf ? buf + "\n\n" + unit : unit;
+      if (candidate.length <= limit) buf = candidate;
+      else { if (buf) pieces.push(buf); buf = unit; }
+    }
+  }
+  if (buf) pieces.push(buf);
+  return pieces.length ? pieces : [String(text)];
+}
+/* @epub-core-end */
+
+function humanLen(seconds) {
+  const mins = Math.max(0, Math.round(seconds / 60));
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return h ? h + " h " + m + " min" : m + " min";
+}
+
+// Speech rate in characters per second, before the first chunk is measured.
+// Latin script runs ~14; Chinese and Japanese run far fewer characters for the
+// same duration, so a CJK-heavy book starts from a much lower estimate.
+function guessCps(text) {
+  const cjk = (text.match(/[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff]/g) || []).length;
+  return Math.max(5, 14 - 8 * (cjk / Math.max(1, text.length)));
+}
+
+function intraFraction() {
+  // A blob's WAV header may still say "unknown length", so use the exact duration
+  // derived from its byte count when the sentence was fetched.
+  const d = B.segDur[B.seg];
+  if (d > 0) return Math.min(1, (player.currentTime || 0) / d);
+  const fallback = player.duration;
+  if (!fallback || !isFinite(fallback) || fallback <= 0) return 0;
+  return Math.min(1, (player.currentTime || 0) / fallback);
+}
+
+// Book playback is synthesized one sentence at a time. That costs a request per
+// sentence, but it is the only way to know exactly where the speech is: the API
+// returns audio with no word or sentence timestamps. The next sentences are
+// fetched while the current one plays, so audio stays ahead of the reader.
+function readerSegments(text) {
+  const paras = [];
+  const flat = [];
+  const prefix = [];
+  let acc = 0;
+  for (const raw of String(text).split("\n\n")) {
+    const par = raw.trim();
+    if (!par) continue;
+    // Drop decoration ("* * *", rules): the server ignores pieces with no letter
+    // or digit, and a request for one would come back empty and stall playback.
+    const sents = epubSentences(par).filter((s) => /[\p{L}\p{N}]/u.test(s));
+    if (!sents.length) continue;
+    paras.push(sents);
+    for (const s of sents) {
+      prefix.push(acc);
+      flat.push(s);
+      acc += s.length;
+    }
+  }
+  return { paras, flat, prefix, chars: acc };
+}
+
+function renderReader() {
+  if (!B.book) return;
+  const text = B.chunks[B.chunk] || "";
+  const { paras, flat, prefix, chars } = readerSegments(text);
+  B.segs = flat;
+  B.segPrefix = prefix;
+  B.segChars = chars;
+  B.seg = 0;
+
+  const body = $("rbody");
+  body.innerHTML = "";
+  readerSpans = [];
+  for (const sents of paras) {
+    const p = document.createElement("p");
+    for (const sent of sents) {
+      const span = document.createElement("span");
+      span.textContent = sent;
+      span.dataset.i = readerSpans.length;
+      p.appendChild(span);
+      readerSpans.push(span);
+      // CJK punctuation already separates sentences; Latin text needs the space back.
+      if (!/[。！？…]["”’')\]]?$/.test(sent)) p.appendChild(document.createTextNode(" "));
+    }
+    if (p.childNodes.length) body.appendChild(p);
+  }
+  readerIdx = -1;
+  body.scrollTop = 0;
+  updateReader();
+}
+
+// The sentence being spoken is known from the playback queue, not guessed from
+// elapsed time, so this marks that exact span.
+function updateReader() {
+  if (!B.book || !readerSpans.length) return;
+  if (!B.playing) {
+    readerSpans.forEach((s) => s.classList.remove("now", "done"));
+    readerIdx = -1;
+    return;
+  }
+  const idx = Math.max(0, Math.min(B.seg, readerSpans.length - 1));
+  if (idx === readerIdx) return;
+  readerIdx = idx;
+  readerSpans.forEach((s, i) => {
+    s.classList.toggle("now", i === idx);
+    s.classList.toggle("done", i < idx);
+  });
+  if (readerFollow) {
+    const el = readerSpans[idx];
+    const box = $("rbody");
+    const top = Math.max(0, el.offsetTop - box.clientHeight / 2);
+    if (typeof box.scrollTo === "function") {
+      box.scrollTo({ top, behavior: REDUCED.matches ? "auto" : "smooth" });
+    } else {
+      box.scrollTop = top;
+    }
+  }
+}
+
+function updateProgress() {
+  const book = B.book;
+  if (!book || !B.segs.length) return;
+  const ch = book.chapters[B.index];
+  const seg = Math.max(0, Math.min(B.seg, B.segs.length - 1));
+  const partFrac = B.segChars
+    ? Math.min(1, (B.segPrefix[seg] + intraFraction() * B.segs[seg].length) / B.segChars)
+    : 0;
+  const frac = book.totalChars
+    ? Math.min(1, (ch.before + partFrac * ch.chars) / book.totalChars) : 0;
+  $("bprogress").style.width = (frac * 100).toFixed(1) + "%";
+  $("bbar").setAttribute("aria-valuenow", Math.round(frac * 100));
+}
+
+function updateBookUI() {
+  const book = B.book;
+  const has = !!book;
+  $("bread").disabled = !has || B.playing || bookSaving;
+  $("bpause").disabled = !B.playing;
+  $("bstop").disabled = !B.playing;
+  $("bprev").disabled = !has || B.index <= 0 || bookSaving;
+  $("bnext").disabled = !has || B.index >= (has ? book.chapters.length - 1 : 0) || bookSaving;
+  $("bsave").disabled = !has || B.playing || generating || bookSaving;
+  $("go").disabled = generating || B.playing || bookSaving;
+  $("bpause").querySelector("span").textContent = B.paused ? "Resume" : "Pause";
+  if (!has) return;
+
+  const ch = book.chapters[B.index];
+  const chunks = Math.max(1, B.chunks.length);
+  // No moving percentage here: this line is a live region, and rewriting it four
+  // times a second would make a screen reader chatter through the whole chapter.
+  $("bnow").textContent = "Chapter " + (B.index + 1) + " of " + book.chapters.length +
+    " · " + ch.title + " · part " + (B.chunk + 1) + "/" + chunks +
+    (B.playing ? "" : " — press Read");
+  $("rchapter").textContent = "Chapter " + (B.index + 1) + " · " + ch.title;
+  $("rpart").textContent = (B.chunk + 1) + " / " + chunks;
+  $("pprev").disabled = B.chunk <= 0 || bookSaving;
+  $("pnext").disabled = B.chunk >= chunks - 1 || bookSaving;
+  document.querySelectorAll("#chapters button").forEach((b) => {
+    b.setAttribute("aria-current", String(Number(b.dataset.i) === B.index));
+  });
+  updateProgress();
+  updateReader();
+}
+
+async function bookBaseParams() {
+  const p = buildParams("");
+  p.delete("text");
+  await applyVoice(p);
+  return p;
+}
+
+/* Voice design has no speaker of its own between requests, so a book built from
+   an instruction alone gets a new voice every part. Fix that by synthesizing one
+   short passage, registering it as a reference, and reading the book from that
+   voice_id. It costs one ~15 s sample and is then cached. */
+function anchorSample(text, cps) {
+  const flat = String(text).replace(/\s+/g, " ").trim();
+  const maxChars = Math.max(60, Math.min(260, Math.round(18 * (cps || 14))));
+  if (flat.length <= maxChars) return flat;
+  const cut = flat.slice(0, maxChars);
+  const m = cut.match(/^[\s\S]*[.!?。！？…]["”’')\]]?/);
+  const out = (m ? m[0] : cut).trim();
+  return out.length >= 40 ? out : cut.trim();
+}
+
+function pcmToWav(pcm) {
+  const n = pcm.byteLength & ~1;              // 16-bit samples
+  const out = new Uint8Array(44 + n);
+  const v = new DataView(out.buffer);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + n, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 24000, true); v.setUint32(28, 48000, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, n, true);
+  out.set(new Uint8Array(pcm, 0, n), 44);
+  return out;
+}
+
+async function anchorDesignedVoice(text, params, signal) {
+  const p = new URLSearchParams(params);   // base params, no voice_id yet
+  p.set("text", text);
+  const r = await fetch(API + "/v1/audio/speech", {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: p.toString(),
+    signal,
+  });
+  if (!r.ok) throw new Error("voice sample failed: " + (await apiErr(r)));
+  const pcm = await r.arrayBuffer();
+  if (pcm.byteLength < 9600) throw new Error("the voice sample came back too short");
+  const fd = new FormData();
+  fd.append("ref_audio", new Blob([pcmToWav(pcm)], { type: "audio/wav" }), "anchor.wav");
+  fd.append("ref_text", text);
+  const rr = await fetch(API + "/v1/voices", { method: "POST", body: fd, signal });
+  if (!rr.ok) throw new Error("saving the voice sample failed: " + (await apiErr(rr)));
+  return (await rr.json()).id;
+}
+
+// Design mode has no speaker of its own between requests, so a book built from an
+// instruction alone would get a new voice every part. Anchor it once: synthesize a
+// short passage, register it as a reference, and use that voice_id from then on.
+async function anchorIfNeeded(p, index, signal, quiet = false) {
+  if (p.get("voice_id")) return p;
+  const sig = p.toString();
+  if (B.anchorSig !== sig || !B.anchorId) {
+    if (!quiet) {
+      show("info", "Holding the designed voice — generating a short reference (about 15 s). " +
+        "One time, then every part uses that voice.");
+    }
+    B.anchorId = await anchorDesignedVoice(anchorTextFor(index), p, signal);
+    B.anchorSig = sig;
+  }
+  p.set("voice_id", B.anchorId);
+  return p;
+}
+
+function anchorTextFor(index) {
+  let joined = "";
+  for (let i = index; i < B.book.chapters.length && joined.length < 900; i++) {
+    joined += (joined ? " " : "") + B.book.chapters[i].text;
+  }
+  return anchorSample(joined, B.cps || 14);
+}
+
+// One request per sentence, fetched to a blob. That makes the sentence boundary
+// exact: `ended` means this sentence is over, with no interpolation involved.
+function segUrl(i, run) {
+  if (B.segUrls[i]) return Promise.resolve(B.segUrls[i]);
+  if (B.segPending[i]) return B.segPending[i];
+  const ctl = new AbortController();
+  B.segCtls[i] = ctl;
+  const p = (async () => {
+    const q = new URLSearchParams(B.base);
+    q.set("text", B.segs[i]);
+    const r = await fetch(API + "/v1/audio/speech.wav?" + q.toString(), { signal: ctl.signal });
+    if (!r.ok) throw new Error(await apiErr(r));
+    const blob = await r.blob();
+    if (run !== B.run) throw new DOMException("superseded", "AbortError");
+    B.segDur[i] = Math.max(0, blob.size - 44) / 48000;
+    const url = URL.createObjectURL(blob);
+    B.segUrls[i] = url;
+    return url;
+  })();
+  B.segPending[i] = p;
+  const clear = () => { delete B.segPending[i]; delete B.segCtls[i]; };
+  p.then(clear, clear);
+  return p;
+}
+
+function prefetchSeg(i) {
+  if (!B.playing || i < 0 || i >= B.segs.length) return;
+  if (B.segUrls[i] || B.segPending[i]) return;
+  segUrl(i, B.run).catch(() => { /* a real failure surfaces when the segment plays */ });
+}
+
+function clearSegments() {
+  for (const k of Object.keys(B.segUrls)) URL.revokeObjectURL(B.segUrls[k]);
+  B.segUrls = {};
+  B.segDur = {};
+  for (const k of Object.keys(B.segCtls)) {
+    try { B.segCtls[k].abort(); } catch { /* already gone */ }
+  }
+  B.segCtls = {};
+  B.segPending = {};
+}
+
+async function playSeg(run, i) {
+  if (run !== B.run || !B.playing) return;
+  // The first sentence of a part streams straight from the server, so audio
+  // starts in ~0.2 s; the following ones are prefetched blobs, which is what
+  // lets the reader know exactly which sentence is playing.
+  const first = i === 0;
+  let url = null;
+  if (!first) {
+    try {
+      url = await segUrl(i, run);
+    } catch (e) {
+      if (e && e.name === "AbortError") return;
+      stopBook();
+      err(e);
+      return;
+    }
+    if (run !== B.run) return;
+  }
+  B.seg = i;
+  updateReader();
+  t0 = performance.now(); ttfa = null; lastProgress = 0;
+  const p = new URLSearchParams(B.base);
+  p.set("text", B.segs[i]);
+  const streamUrl = API + "/v1/audio/speech.wav?" + p.toString();
+  $("curl").textContent = buildCurl(streamUrl, !!p.get("voice_id"));
+  activeUrl = first ? streamUrl : null;   // a blob URL is not a server request
+  player.src = first ? streamUrl : url;
+  player.load();
+  updateBookUI();
+  try { await player.play(); } catch { /* the click that started playback allows it */ }
+  if (B.paused && run === B.run) player.pause();
+  // Stay ahead: generation runs at ~0.55x, so one buffered sentence covers the
+  // next unless it is nearly twice as long as this one; two covers more.
+  prefetchSeg(i + 1);
+  prefetchSeg(i + 2);
+}
+
+function bookNextSeg() {
+  if (!B.playing) return;
+  // Each finished sentence gives a real speaking rate, which keeps the save
+  // estimate and the anchor length honest.
+  const dur = B.segDur[B.seg];
+  if (dur > 0) {
+    const cps = (B.segs[B.seg] || "").length / dur;
+    if (isFinite(cps) && cps > 2 && cps < 60) B.cps = B.cps * 0.7 + cps * 0.3;
+  }
+  const next = B.seg + 1;
+  const done = B.segUrls[B.seg];
+  if (done) URL.revokeObjectURL(done);
+  delete B.segUrls[B.seg];
+  if (next < B.segs.length) {
+    playSeg(B.run, next);
+    return;
+  }
+  // This part is finished: move to the next part, then the next chapter.
+  B.chunk++;
+  if (B.chunk >= B.chunks.length) {
+    if (B.index + 1 >= B.book.chapters.length) {
+      stopBook();
+      show("info", "Finished — that was the end of the book.");
+      return;
+    }
+    B.index++;
+    B.chunk = 0;
+    B.chunks = chunkText(B.book.chapters[B.index].text);
+  }
+  clearSegments();
+  renderReader();
+  updateBookUI();
+  playSeg(B.run, 0);
+}
+
+function selectPart(target) {
+  B.chunk = target;
+  renderReader();
+  updateBookUI();
+}
+
+function goPart(delta) {
+  if (!B.book) return;
+  const target = B.chunk + delta;
+  if (target < 0 || target >= B.chunks.length) return;
+  // Mid-playback a part jump continues seamlessly; while idle it only moves the
+  // reading position, so browsing parts never starts audio on its own.
+  if (B.playing) startBook(B.index, target);
+  else selectPart(target);
+}
+
+async function startBook(index, from = 0) {
+  if (generating) return err("Wait for the current generation to finish.");
+  if (bookSaving) return err("A chapter is being saved — wait for it to finish.");
+  if (!B.book) return err("Load an EPUB first.");
+  const chapters = B.book.chapters;
+  index = Math.max(0, Math.min(index, chapters.length - 1));
+  const run = ++B.run;
+  // Silence whatever is playing before replacing the state, so an `ended` event
+  // from the old sentence cannot advance the new chapter.
+  try { player.pause(); } catch { /* nothing playing */ }
+  clearSegments();
+  B.index = index;
+  B.chunks = chunkText(chapters[index].text);
+  B.chunk = Math.max(0, Math.min(from, B.chunks.length - 1));
+  B.playing = true;
+  B.paused = false;
+  B.base = null;
+  renderReader();
+  updateBookUI();
+  try {
+    B.base = await bookBaseParams();     // voice snapshot for the whole session
+    if (run !== B.run) return;
+
+    if (!B.base.get("voice_id")) $("bnow").textContent = "Preparing a consistent voice…";
+    await anchorIfNeeded(B.base, index);
+    if (run !== B.run) return;
+
+    await playSeg(run, 0);
+  } catch (e) {
+    if (run === B.run) { stopBook(); err(e); }
+  }
+}
+
+function stopBook() {
+  B.run++;
+  B.playing = false;
+  B.paused = false;
+  B.base = null;
+  activeUrl = null;
+  try { player.pause(); } catch { /* already paused */ }
+  player.removeAttribute("src");
+  player.load();
+  clearSegments();
+  currentUrl = null;
+  $("save").disabled = true;
+  updateBookUI();
+}
+
+function renderBook() {
+  const book = B.book;
+  $("bookdrop").hidden = true;
+  $("bookmeta").hidden = false;
+  $("btitle").textContent = book.title;
+  const bits = [];
+  if (book.author) bits.push(book.author);
+  bits.push(book.chapters.length + " chapter" + (book.chapters.length === 1 ? "" : "s"));
+  bits.push(book.totalChars.toLocaleString() + " characters");
+  bits.push("about " + humanLen(book.totalChars / 14));
+  $("bmeta").textContent = bits.join(" · ");
+
+  const ol = $("chapters");
+  ol.innerHTML = "";
+  book.chapters.forEach((ch, i) => {
+    const li = document.createElement("li");
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.dataset.i = i;
+    const n = document.createElement("span"); n.className = "n"; n.textContent = i + 1;
+    const t = document.createElement("span"); t.className = "t"; t.textContent = ch.title;
+    const c = document.createElement("span");
+    c.className = "c";
+    c.textContent = Math.max(1, Math.round(ch.chars / 14 / 60)) + " min";
+    btn.append(n, t, c);
+    btn.onclick = () => startBook(i);
+    li.appendChild(btn);
+    ol.appendChild(li);
+  });
+  renderReader();
+  updateBookUI();
+}
+
+async function openBook(file) {
+  hide();
+  if (!file) return;
+  if (bookSaving) return err("A chapter is being saved — wait for it to finish.");
+  if (!/\.epub$/i.test(file.name)) return err("That is not an EPUB (.epub) file.");
+  stopBook();                       // a new book silences the old one immediately
+  show("info", "Opening " + file.name + "…");
+  try {
+    const book = await parseEpub(await file.arrayBuffer());
+    B.book = book;
+    B.cps = guessCps(book.chapters.map((c) => c.text).join(" "));
+    B.index = 0;
+    B.chunk = 0;
+    B.chunks = chunkText(book.chapters[0].text);
+    renderBook();    show("info", "“" + book.title + "” — " + book.chapters.length + " chapters.");
+  } catch (e) {
+    err(e);
+  }
+}
+
+function concatWav(buffers) {
+  const parts = [];
+  let total = 0;
+  for (const b of buffers) {
+    const dv = new DataView(b);
+    if (dv.getUint32(0, false) !== 0x52494646) throw new Error("The server did not return a WAV.");
+    let off = 12, dataOff = -1;
+    while (off + 8 <= b.byteLength) {
+      const id = dv.getUint32(off, false);
+      const size = dv.getUint32(off + 4, true);
+      if (id === 0x64617461) { dataOff = off + 8; break; }   // "data"
+      off += 8 + size + (size & 1);
+    }
+    if (dataOff < 0) throw new Error("A chunk had no WAV data section.");
+    // The streaming header's declared length can be a placeholder, so take the
+    // actual bytes to the end of the response instead of trusting it.
+    parts.push(new Uint8Array(b, dataOff));
+    total += b.byteLength - dataOff;
+  }
+  const out = new Uint8Array(44 + total);
+  const v = new DataView(out.buffer);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, "RIFF"); v.setUint32(4, 36 + total, true); str(8, "WAVE");
+  str(12, "fmt "); v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, 24000, true); v.setUint32(28, 48000, true);
+  v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  str(36, "data"); v.setUint32(40, total, true);
+  let o = 44;
+  for (const part of parts) { out.set(part, o); o += part.length; }
+  return out;
+}
+
+function clock(seconds) {
+  const s = Math.max(0, Math.round(seconds));
+  const h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), sec = s % 60;
+  return h
+    ? h + ":" + String(m).padStart(2, "0") + ":" + String(sec).padStart(2, "0")
+    : m + ":" + String(sec).padStart(2, "0");
+}
+
+function shortDur(seconds) {
+  if (!isFinite(seconds) || seconds <= 0) return "0 s";
+  if (seconds < 60) return Math.max(1, Math.round(seconds)) + " s";
+  const m = Math.round(seconds / 60);
+  return m < 60 ? m + " min" : Math.floor(m / 60) + " h " + (m % 60) + " min";
+}
+
+// Painting is throttled, but the trailing edge still runs: data often arrives in
+// bursts, and without it a stalled stream would leave the last progress unpainted.
+function paintSave() {
+  if (!savePaintState) return;
+  const s = savePaintState;
+  $("savebar").style.width = (s.overall * 100).toFixed(1) + "%";
+  $("savebarwrap").setAttribute("aria-valuenow", Math.round(s.overall * 100));
+  $("saveeta").textContent = s.text;
+}
+
+function queueSavePaint(state) {
+  savePaintState = state;
+  const now = performance.now();
+  if (now - savePaint >= 200) {
+    savePaint = now;
+    paintSave();
+  } else if (!savePaintTimer) {
+    savePaintTimer = setTimeout(() => {
+      savePaintTimer = null;
+      savePaint = performance.now();
+      paintSave();
+    }, 200 - (now - savePaint));
+  }
+}
+
+// Read a response body incrementally so a long generation shows progress.
+// Falls back to arrayBuffer() where streaming bodies are unavailable.
+async function readStream(r, onBytes) {
+  if (!r.body || typeof r.body.getReader !== "function") return r.arrayBuffer();
+  const reader = r.body.getReader();
+  const chunks = [];
+  let bytes = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    chunks.push(value);
+    bytes += value.length;
+    onBytes(bytes);
+  }
+  const out = new Uint8Array(bytes);
+  let off = 0;
+  for (const c of chunks) { out.set(c, off); off += c.length; }
+  return out.buffer;
+}
+
+async function saveChapter() {
+  if (!B.book) return err("Load an EPUB first.");
+  if (generating) return err("Wait for the current generation to finish.");
+  if (bookSaving) return;
+  if (B.playing) return err("Stop playback before saving a chapter.");
+  const ch = B.book.chapters[B.index];
+  const chunks = chunkText(ch.text);
+  const totalChars = chunks.reduce((n, c) => n + c.length, 0) || 1;
+  const chapterAudioEst = totalChars / (B.cps || 14);
+  const estWall = chapterAudioEst * 0.55;   // measured RTF is ~0.55
+  const btn = $("bsave");
+  const old = btn.textContent;
+  bookSaving = true;
+  saveCtl = new AbortController();
+  savePaint = 0;
+  if (savePaintTimer) { clearTimeout(savePaintTimer); savePaintTimer = null; }
+  savePaintState = null;
+  btn.disabled = true;
+  btn.textContent = "Saving 1/" + chunks.length;
+  $("saveprog").hidden = false;
+  $("savebar").style.width = "0%";
+  $("savebarwrap").setAttribute("aria-valuenow", "0");
+  $("saveeta").textContent = "";
+  $("savetext").textContent = "Saving “" + ch.title + "” · 1 / " + chunks.length;
+  updateBookUI();
+  show("info", "Rendering “" + ch.title + "” — " + chunks.length + " part" +
+    (chunks.length === 1 ? "" : "s") + ", about " + shortDur(estWall) + ". This regenerates it.");
+  const started = performance.now();
+  let doneChars = 0, doneAudio = 0;
+  try {
+    const base = await bookBaseParams();
+    await anchorIfNeeded(base, B.index, saveCtl.signal, true);
+    const parts = [];
+    for (let n = 0; n < chunks.length; n++) {
+      const text = chunks[n];
+      const partAudio = text.length / (B.cps || 14);
+      const p = new URLSearchParams(base);
+      p.set("text", text);
+      btn.textContent = "Saving " + (n + 1) + "/" + chunks.length;
+      $("savetext").textContent =
+        "Saving “" + ch.title + "” · " + (n + 1) + " / " + chunks.length;
+      $("savebar").style.width = ((doneChars / totalChars) * 100).toFixed(1) + "%";
+
+      const r = await fetch(API + "/v1/audio/speech.wav?" + p.toString(),
+                            { signal: saveCtl.signal });
+      if (!r.ok) throw new Error(await apiErr(r));
+
+      // Read the stream as it arrives: each part is minutes of generation, and
+      // arrayBuffer() would show nothing until the whole part had finished.
+      const ab = await readStream(r, (bytes) => {
+        const audio = Math.max(0, bytes - 44) / 48000;      // 24 kHz mono s16
+        const frac = partAudio > 0 ? Math.min(0.99, audio / partAudio) : 0;
+        const overall = Math.min(0.99, (doneChars + frac * text.length) / totalChars);
+        const elapsed = (performance.now() - started) / 1000;
+        const eta = overall > 0.02 ? elapsed * (1 - overall) / overall : estWall - elapsed;
+        // Report the whole chapter, not just the part: doneAudio carries the
+        // completed parts, so the total matches the bar and the ETA.
+        queueSavePaint({
+          overall,
+          text: clock(doneAudio + audio) + " of ~" + clock(chapterAudioEst) +
+            (eta > 3 ? " · " + shortDur(eta) + " left" : ""),
+        });
+      });
+      parts.push(ab);
+      doneChars += text.length;
+      doneAudio += Math.max(0, ab.byteLength - 44) / 48000;
+    }
+    const wav = concatWav(parts);
+    const name = (ch.title.replace(/[^\w \-]+/g, "").trim().slice(0, 60) || "chapter") + ".wav";
+    const url = URL.createObjectURL(new Blob([wav], { type: "audio/wav" }));
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = (B.index + 1) + "-" + name;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(url), 10000);
+    show("info", "Saved “" + name + "”.");
+  } catch (e) {
+    if (e && e.name === "AbortError") show("info", "Save cancelled.");
+    else err(e);
+  } finally {
+    bookSaving = false;
+    saveCtl = null;
+    if (savePaintTimer) { clearTimeout(savePaintTimer); savePaintTimer = null; }
+    savePaintState = null;
+    btn.textContent = old;
+    $("saveprog").hidden = true;
+    updateBookUI();
+  }
+}
+
+const bookDrop = $("bookdrop"), bookFile = $("bookfile");
+bookDrop.onclick = () => bookFile.click();
+$("bopen").onclick = () => bookFile.click();
+bookFile.addEventListener("change", () => {
+  if (bookFile.files.length) openBook(bookFile.files[0]);
+  bookFile.value = "";
+});
+bookDrop.addEventListener("dragover", (e) => { e.preventDefault(); bookDrop.classList.add("over"); });
+bookDrop.addEventListener("dragleave", () => bookDrop.classList.remove("over"));
+bookDrop.addEventListener("drop", (e) => {
+  e.preventDefault();
+  bookDrop.classList.remove("over");
+  if (e.dataTransfer.files.length) openBook(e.dataTransfer.files[0]);
+});
+$("bread").onclick = () => startBook(B.index, B.chunk);
+$("bprev").onclick = () => startBook(B.index - 1, 0);
+$("bnext").onclick = () => startBook(B.index + 1, 0);
+$("bstop").onclick = stopBook;
+$("bsave").onclick = saveChapter;
+$("savecancel").onclick = () => { if (saveCtl) saveCtl.abort(); };
+$("pprev").onclick = () => goPart(-1);
+$("pnext").onclick = () => goPart(1);
+$("rfollow").onclick = () => {
+  readerFollow = !readerFollow;
+  $("rfollow").setAttribute("aria-pressed", String(readerFollow));
+  if (readerFollow) { readerIdx = -1; updateReader(); }
+};
+$("bpause").onclick = () => {
+  if (!B.playing) return;
+  if (B.paused) {
+    B.paused = false;
+    const pr = player.play();
+    if (pr && typeof pr.catch === "function") pr.catch(() => { /* source may still be loading */ });
+  } else {
+    B.paused = true;
+    player.pause();
+  }
+  updateBookUI();
+};
+
+
 $("dice").onclick = () => { $("seed").value = Math.floor(Math.random() * 4294967295); };
 document.addEventListener("keydown", (e) => {
-  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") { e.preventDefault(); generate(); }
+  if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+    e.preventDefault();
+    if (MODE === "book") startBook(B.index); else generate();
+  } else if (e.key === "Escape" && bookSaving && saveCtl) {
+    saveCtl.abort();
+  }
 });
 
 // keep the download target in step with the player's source
@@ -864,7 +2584,7 @@ new MutationObserver(() => {
   if (player.src && player.src.startsWith("http")) { currentUrl = player.src; $("save").disabled = false; }
 }).observe(player, { attributes: true, attributeFilter: ["src"] });
 
-health(); loadVoices();
+health(); loadVoices(); setMode("speak");
 setInterval(health, 15000);
 </script>
 </body>

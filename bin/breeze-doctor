@@ -1,0 +1,108 @@
+#!/usr/bin/env bash
+# Print a support-friendly report: hardware, tools, install, and server state.
+# Read-only. Paste this into a bug report.
+set -uo pipefail
+
+REPO="${BREEZE_REPO:-$HOME/Github/breeze-tts2-fast-streaming-api}"
+PORT="${BREEZE_PORT:-8080}"
+GUI_PORT="${BREEZE_GUI_PORT:-8090}"
+PRECISION="${BREEZE_PRECISION:-mixed}"
+
+BF16_REPO="mlx-community/Breeze-TTS-2-mlx"
+BF16_REV="3c8829fb7fd335818f085cd2ef49b4100c0e46c8"
+BIT8_REPO="mlx-community/Breeze-TTS-2-mlx-8bit"
+BIT8_REV="c6e4a2ff6ab9afba68b7853de802273ffe23fb49"
+
+case "$PRECISION" in
+  mixed|bf16) DL_REPO="$BF16_REPO"; DL_REV="$BF16_REV" ;;
+  8bit)       DL_REPO="$BIT8_REPO"; DL_REV="$BIT8_REV" ;;
+  *)          DL_REPO="(invalid precision)"; DL_REV="" ;;
+esac
+HUB="${HF_HOME:-$HOME/.cache/huggingface}/hub"
+HUB_DIR_NAME="$(printf '%s' "$DL_REPO" | sed 's|/|--|g')"
+SNAP="$HUB/models--$HUB_DIR_NAME/snapshots/$DL_REV"
+
+row() { printf '  %-12s %s\n' "$1" "$2"; }
+
+have() { command -v "$1" >/dev/null 2>&1; }
+
+echo "breeze-doctor"
+echo
+
+echo "system"
+row "macOS" "$(sw_vers -productVersion) ($(uname -m))"
+row "chip" "$(sysctl -n machdep.cpu.brand_string 2>/dev/null || echo unknown)"
+row "memory" "$(($(sysctl -n hw.memsize) / 1024 / 1024 / 1024)) GB"
+row "disk free" "$(df -k "$HOME" | awk 'NR==2 {printf "%d GB", $4 / 1024 / 1024}')"
+echo
+
+echo "tools"
+for tool in uv git ffmpeg afconvert; do
+  if have "$tool"; then
+    case "$tool" in
+      uv)        row "$tool" "$(uv --version 2>/dev/null | head -1)" ;;
+      git)       row "$tool" "$(git --version | sed 's/^git version //')" ;;
+      ffmpeg)    row "$tool" "$(ffmpeg -version 2>/dev/null | head -1 | awk '{print $3}')" ;;
+      afconvert) row "$tool" "present" ;;
+    esac
+  else
+    case "$tool" in
+      ffmpeg)    row "$tool" "missing (needed for --m4b: brew install ffmpeg)" ;;
+      afconvert) row "$tool" "missing (needed for --m4a)" ;;
+      uv)        row "$tool" "missing (brew install uv)" ;;
+      *)         row "$tool" "missing" ;;
+    esac
+  fi
+done
+echo
+
+echo "install"
+if [ -d "$REPO" ]; then
+  rev="$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo 'not a git checkout')"
+  row "repo" "$REPO @ $rev"
+else
+  row "repo" "missing ($REPO)"
+fi
+if [ -x "$REPO/.venv/bin/python" ]; then
+  row "venv" "$("$REPO/.venv/bin/python" -V 2>&1)"
+else
+  row "venv" "missing ($REPO/.venv)"
+fi
+if [ -d "$SNAP" ] && [ -n "$(ls -A "$SNAP" 2>/dev/null)" ]; then
+  row "weights" "$PRECISION: $DL_REPO @ ${DL_REV:0:7} ($(du -shL "$SNAP" 2>/dev/null | awk '{print $1}'))"
+else
+  row "weights" "missing ($PRECISION) -- run: HF_XET_FIXED_DOWNLOAD_CONCURRENCY=4 hf download $DL_REPO --revision $DL_REV"
+fi
+linked=""
+for name in run gui say epub doctor setup; do
+  have "breeze-$name" && linked="$linked $name"
+done
+row "scripts" "${linked:- none on PATH (run bin/breeze-setup)}"
+echo
+
+echo "server"
+health="$(curl -fsS -m 3 "http://127.0.0.1:$PORT/health" 2>/dev/null)"
+if [ -n "$health" ]; then
+  rate="$(printf '%s' "$health" | grep -o '"sample_rate"[[:space:]]*:[[:space:]]*[0-9]*' | grep -o '[0-9]*$')"
+  voices="$(curl -fsS -m 3 "http://127.0.0.1:$PORT/v1/voices" 2>/dev/null | grep -o '"id"' | wc -l | tr -d ' ')"
+  row "api" "ready at http://127.0.0.1:$PORT (${rate:-?} Hz, ${voices:-?} voices)"
+else
+  if have lsof && lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    row "api" "port $PORT is in use, but /health did not answer"
+  else
+    row "api" "not running (start it with: breeze-run)"
+  fi
+fi
+if curl -fsS -m 2 -o /dev/null "http://127.0.0.1:$GUI_PORT/" 2>/dev/null; then
+  row "gui" "serving at http://127.0.0.1:$GUI_PORT/"
+else
+  row "gui" "not running (start it with: breeze-gui)"
+fi
+echo
+
+echo "env"
+if env | grep -q '^BREEZE_'; then
+  env | grep '^BREEZE_' | sort | while IFS= read -r line; do row "${line%%=*}" "${line#*=}"; done
+else
+  row "BREEZE_*" "(none set)"
+fi
