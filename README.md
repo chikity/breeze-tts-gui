@@ -236,6 +236,12 @@ rail on the right. `⌘↵` generates from anywhere.
   gender out of the instruction. It needs **cfg_scale 2–4** to land; at `1` the
   instruction is largely ignored. With a reference clip, the clip already fixes the
   voice, so gender is not offered.
+- **Language** — `Auto`, `English`, `中文 · 普通话` or `中文 · 粤语`. Auto reads the
+  script (or the book) and sends a directive in that language; `cfg_scale` is raised
+  to 3 if it was 1. The model has no language field and is bilingual English/Chinese,
+  so this directive is what keeps Chinese from drifting between Mandarin and
+  Cantonese. Write the instruction in the same language too — the UI warns if it
+  isn't. Cantonese is experimental: the model only claims Chinese, not Cantonese.
 - **Instruction** — optional. Adding one to a reference is what makes it voice
   *direction* rather than a plain clone.
 - **Delivery** — `cfg_scale` (`1` is plain; higher follows the instruction more
@@ -299,6 +305,7 @@ standard library.
 breeze-epub book.epub --list                    # chapters, lengths, no audio
 breeze-epub book.epub --voice alice             # reuse a saved voice
 breeze-epub book.epub --voice alice --m4b       # one audiobook, chapter marks
+breeze-epub book.epub --voice alice --language zh-CN --m4b   # force Mandarin
 breeze-epub book.epub --ref me.wav \
   --ref-text "the exact words in me.wav"        # clone a reference for the whole book
 breeze-epub book.epub --instruction "A calm, low female narrator." --cfg 3
@@ -364,8 +371,19 @@ caches the built prefix, so there is no per-chapter encode cost. Use
 `.breeze-epub.json` (or the saved name).
 
 Two knobs are per-run and deterministic on purpose: `--seed` (default `42`) and
-`--cfg` (default `2` with `--instruction`, else `1`). Same text, voice and settings
-reproduce the same take, which is also what makes the cache sound.
+`--cfg` (default `3` with a language directive, `2` with `--instruction`, else `1`).
+Same text, voice and settings reproduce the same take, which is also what makes the
+cache sound.
+
+**Chinese (and other languages).** The API has no language field, and the model is
+bilingual English/Chinese — it does not claim Cantonese. `--language auto|en|zh-CN|zh-HK`
+adds a directive in the target language (and defaults `--cfg` to 3 so it lands). Auto
+detects from the book; `zh-CN` is standard Mandarin, `zh-HK` is experimental
+Cantonese. In design mode the anchor sample skips English front matter and comes from
+Chinese text, so the anchored voice is not built from a copyright page. Write
+`--instruction` in the same language as the text; an English instruction on Chinese
+text is the usual cause of the speaker drifting between Mandarin and Cantonese. A
+changed language is a changed run signature, so use `--fresh` once after switching.
 
 **Chapters and chunks.** A chapter becomes one request when it fits under the
 server's 10,000-character text limit (`--chunk-chars`, default 9,000), so the server's

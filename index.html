@@ -694,6 +694,20 @@
       </div>
 
       <div style="margin-top:var(--s4)">
+        <label for="lang">Language <span class="fld-note">— keeps Chinese in one variety</span></label>
+        <select id="lang">
+          <option value="auto">Auto (from the text / book)</option>
+          <option value="en">English</option>
+          <option value="zh-CN">中文 · 普通话</option>
+          <option value="zh-HK">中文 · 粤语 (experimental)</option>
+        </select>
+        <div class="muted" id="langnote" style="margin-top:6px">
+          The language directive is sent in the target language. Voice design and direction need
+          cfg_scale 2–4; at 1 the instruction is ignored.
+        </div>
+      </div>
+
+      <div style="margin-top:var(--s4)">
         <label for="instr">Instruction <span class="fld-note">— optional; adds voice direction</span></label>
         <textarea id="instr" rows="3" placeholder="e.g. Speak slowly with a restrained, serious tone."></textarea>
         <div class="chipgroup">
@@ -874,12 +888,24 @@ const INSTR_PRESETS = [
   "Speak in a restrained, serious, matter-of-fact tone.",
   "Speak playfully, with a teasing, amused lilt.",
   "Whisper softly and intimately.",
+  "请用温和亲切的语气朗读，像在讲故事。",
+  "请用沉稳严肃的语气，语速稍慢一些。",
+  "请用轻快活泼的语气，带一点笑意。",
 ];
 // Voice design has no gender field of its own: the model reads gender out of the
 // instruction, so these phrases are folded in ahead of whatever the user wrote.
+// The instruction language should match the text (per the model card), so the
+// phrase follows the selected language.
 const GENDER_PHRASES = {
-  female: "A female voice.",
-  male: "A male voice.",
+  en: { female: "A female voice.", male: "A male voice." },
+  "zh-CN": { female: "女声。", male: "男声。" },
+  "zh-HK": { female: "女聲。", male: "男聲。" },
+};
+// There is no language field in the API. A directive in the target language is
+// the only lever, and it needs cfg_scale 2-4 to land.
+const LANG_DIRECTIVE = {
+  "zh-CN": "请用标准普通话朗读，发音清晰，语气自然。",
+  "zh-HK": "請用香港粵語朗讀，發音自然。",
 };
 
 let voices = [];
@@ -895,7 +921,7 @@ let generating = false;
 const B = {
   book: null, index: 0, chunks: [], chunk: 0,
   run: 0, playing: false, paused: false, base: null, cps: 14,
-  anchorId: null, anchorSig: null,
+  sessionLang: "en", anchorId: null, anchorSig: null,
   seg: 0, segs: [], segPrefix: [], segChars: 0, segDur: {},
   segUrls: {}, segPending: {}, segCtls: {},
 };
@@ -930,6 +956,50 @@ function insertAtCursor(ta, s) {
   ta.focus();
 }
 
+/* ── language ──────────────────────────────────────────────── */
+// CJK versus Latin letters is enough to tell which language a script or chapter
+// is in; the model has no language field, so this decides which directive to send.
+function detectLang(text) {
+  const s = String(text || "");
+  const cjk = (s.match(/[\u3400-\u9fff]/g) || []).length;
+  const latin = (s.match(/[A-Za-z]/g) || []).length;
+  return cjk > latin ? "zh-CN" : "en";
+}
+
+function effectiveLang(text) {
+  const sel = $("lang").value;
+  return sel === "auto" ? detectLang(text) : sel;
+}
+
+function refreshLangNote() {
+  const note = $("langnote");
+  if (!note) return;
+  const lang = effectiveLang($("text").value);
+  const ins = $("instr").value.trim();
+  if (lang === "zh-HK") {
+    note.textContent = "Cantonese is experimental: the model claims Chinese, not Cantonese. " +
+      "A Cantonese reference plus this directive is the best case.";
+    note.style.color = "var(--warn)";
+  } else if (lang !== "en" && ins && !/[\u3400-\u9fff]/.test(ins)) {
+    note.textContent = "Write the instruction in Chinese too — the model matches the " +
+      "instruction language to the text.";
+    note.style.color = "var(--warn)";
+  } else {
+    note.textContent = "The language directive is sent in the target language. Voice design " +
+      "and direction need cfg_scale 2–4; it is raised to 3 automatically.";
+    note.style.color = "";
+  }
+}
+
+// At cfg 1 the model largely ignores the instruction, including a language directive.
+function ensureCfgForLang(lang) {
+  if (lang === "en") return false;
+  if (parseFloat($("cfg").value) >= 2) return false;
+  $("cfg").value = "3";
+  $("cfgval").textContent = "3.0";
+  return true;
+}
+
 /* ── health ────────────────────────────────────────────────── */
 async function health() {
   try {
@@ -947,7 +1017,10 @@ $("apishow").textContent = API;
 
 /* ── textarea plumbing ─────────────────────────────────────── */
 const textEl = $("text");
-function count() { $("counter").textContent = textEl.value.length + " / 10000"; }
+function count() {
+  $("counter").textContent = textEl.value.length + " / 10000";
+  refreshLangNote();
+}
 textEl.addEventListener("input", count);
 count();
 
@@ -974,9 +1047,11 @@ INSTR_PRESETS.forEach((p) => {
   b.textContent = p.length > 34 ? p.slice(0, 32) + "…" : p;
   b.title = p;
   b.setAttribute("aria-label", p);
-  b.onclick = () => { instrEl.value = p; };
+  b.onclick = () => { instrEl.value = p; refreshLangNote(); };
   $("instrpresets").appendChild(b);
 });
+instrEl.addEventListener("input", refreshLangNote);
+$("lang").addEventListener("change", () => { refreshLangNote(); hide(); });
 
 /* ── voice source ──────────────────────────────────────────── */
 function source() {
@@ -1265,6 +1340,7 @@ $("recbtn").onclick = startRecording;
 $("recstop").onclick = stopRecording;
 pickPassage();
 applySource();
+refreshLangNote();
 
 /* ── voice library ─────────────────────────────────────────── */
 async function loadVoices() {
@@ -1351,18 +1427,21 @@ $("vsave").onclick = async () => {
 /* ── build + play ──────────────────────────────────────────── */
 // The visible instruction box stays the user's own direction; the gender phrase is
 // prepended only on the way out, so nothing is hidden from the curl panel below.
-function composedInstruction() {
+function composedInstruction(text, lang) {
+  const L = lang || effectiveLang(text);
+  const parts = [];
+  if (LANG_DIRECTIVE[L]) parts.push(LANG_DIRECTIVE[L]);
+  const gender = $("gender").value;
+  if (source() === "none" && gender) parts.push(GENDER_PHRASES[L][gender]);
   const base = instrEl.value.trim();
-  const g = $("gender").value;
-  if (source() !== "none" || !g) return base;
-  const phrase = GENDER_PHRASES[g];
-  return base ? phrase + " " + base : phrase;
+  if (base) parts.push(base);
+  return parts.join(" ");
 }
 
-function buildParams(text = textEl.value.trim()) {
+function buildParams(text = textEl.value.trim(), lang = null) {
   const p = new URLSearchParams();
   p.set("text", text);
-  const ins = composedInstruction();
+  const ins = composedInstruction(text, lang);
   if (ins) p.set("instruction", ins);
   p.set("cfg_scale", $("cfg").value);
   p.set("seed", $("seed").value.trim() || "42");
@@ -1493,6 +1572,9 @@ async function generate() {
   if (bookSaving) return err("A chapter is being saved — wait for it to finish.");
   hide(); resetStats();
   if (!textEl.value.trim()) return err("Enter some text to speak.");
+  if (ensureCfgForLang(effectiveLang(textEl.value))) {
+    show("info", "cfg_scale raised to 3 so the language directive lands.");
+  }
   setBusy(true);
   try {
     const p = buildParams();
@@ -2034,7 +2116,7 @@ function updateBookUI() {
 }
 
 async function bookBaseParams() {
-  const p = buildParams("");
+  const p = buildParams("", B.sessionLang);
   p.delete("text");
   await applyVoice(p);
   return p;
@@ -2107,11 +2189,21 @@ async function anchorIfNeeded(p, index, signal, quiet = false) {
 }
 
 function anchorTextFor(index) {
+  // A Chinese book often opens with an English title/copyright page. Anchoring
+  // from that would build an English voice and then ask it to read Chinese.
+  let start = index;
+  if (B.sessionLang !== "en") {
+    for (let i = index; i < B.book.chapters.length; i++) {
+      if (detectLang(B.book.chapters[i].text) !== "en") { start = i; break; }
+    }
+  }
   let joined = "";
-  for (let i = index; i < B.book.chapters.length && joined.length < 900; i++) {
+  for (let i = start; i < B.book.chapters.length && joined.length < 900; i++) {
     joined += (joined ? " " : "") + B.book.chapters[i].text;
   }
-  return anchorSample(joined, B.cps || 14);
+  // Measure the sample itself: a Chinese anchor needs ~100 characters for 18 s,
+  // not the 250 an English one needs, or the server rejects it as too long.
+  return anchorSample(joined, guessCps(joined));
 }
 
 // One request per sentence, fetched to a blob. That makes the sentence boundary
@@ -2258,6 +2350,13 @@ async function startBook(index, from = 0) {
   B.index = index;
   B.chunks = chunkText(chapters[index].text);
   B.chunk = Math.max(0, Math.min(from, B.chunks.length - 1));
+  const langSel = $("lang").value;
+  B.sessionLang = langSel === "auto"
+    ? detectLang(chapters.map((c) => c.text).join(" "))
+    : langSel;
+  if (ensureCfgForLang(B.sessionLang)) {
+    show("info", "cfg_scale raised to 3 so the language directive lands.");
+  }
   B.playing = true;
   B.paused = false;
   B.base = null;

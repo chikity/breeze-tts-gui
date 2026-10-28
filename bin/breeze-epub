@@ -483,6 +483,19 @@ def guess_cps(text: str) -> float:
     return max(5.0, 14.0 - 8.0 * cjk / max(1, len(text)))
 
 
+LANG_DIRECTIVE = {
+    "zh-CN": "请用标准普通话朗读，发音清晰，语气自然。",
+    "zh-HK": "請用香港粵語朗讀，發音自然。",
+}
+
+
+def detect_language(text: str) -> str:
+    """The model has no language field; the script decides which directive to send."""
+    cjk = sum(1 for c in text if "\u3400" <= c <= "\u9fff")
+    latin = sum(1 for c in text if ("A" <= c <= "Z") or ("a" <= c <= "z"))
+    return "zh-CN" if cjk > latin else "en"
+
+
 def anchor_sample(text: str, cps: float) -> str:
     """~18 s of text, cut at a sentence end, for anchoring a designed voice."""
     flat = " ".join(text.split())
@@ -496,7 +509,7 @@ def anchor_sample(text: str, cps: float) -> str:
 
 
 def anchor_design_voice(fields: dict[str, str], chapters: list[dict],
-                        outdir: str, name: str | None) -> str:
+                        outdir: str, name: str | None, lang: str = "en") -> str:
     """Make one sample of the designed voice, register it, and return its id.
 
     Voice design has no speaker between requests. Anchoring it once means every
@@ -504,8 +517,14 @@ def anchor_design_voice(fields: dict[str, str], chapters: list[dict],
     The sample always comes from the start of the book, so --start/--end cannot
     change the anchor (and therefore the voice) between runs.
     """
-    cps = guess_cps(chapters[0]["text"])
-    sample = anchor_sample(" ".join(ch["text"] for ch in chapters), cps)
+    start = 0
+    if lang != "en":
+        for i, ch in enumerate(chapters):
+            if detect_language(ch["text"]) != "en":
+                start = i
+                break
+    cps = guess_cps(chapters[start]["text"])
+    sample = anchor_sample(" ".join(ch["text"] for ch in chapters[start:]), cps)
     if len(sample) < 20:
         die("not enough text to anchor a designed voice")
     pcm = os.path.join(outdir, ".anchor.pcm")
@@ -747,14 +766,16 @@ def main() -> None:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Read an EPUB aloud through the Breeze TTS 2 server, in one voice.",
         epilog="""\
-voice (pick one):
+voice:
   --voice NAME|ID          an existing saved voice -- reuse it for every chunk
   --ref CLIP --ref-text T  register a clone reference once, reuse its voice id
-  --instruction TEXT       voice design; anchored once, so it holds for the book
+  --instruction TEXT       a voice design, or direction on top of a voice/reference
+  --language LANG          auto (default), en, zh-CN or zh-HK; adds a directive in
+                           that language and keeps Chinese in one variety
 
 examples:
   breeze-epub book.epub --list
-  breeze-epub book.epub --voice alice --m4b
+  breeze-epub book.epub --voice alice --language zh-CN --m4b
   breeze-epub book.epub --ref me.wav --ref-text "the exact words I said"
   breeze-epub book.epub --instruction "A calm, low female narrator." --cfg 3 --m4b
 """)
@@ -766,8 +787,10 @@ examples:
     ap.add_argument("--save-voice", metavar="NAME",
                     help="save the --ref clip or --instruction anchor under this name")
     ap.add_argument("--instruction", metavar="TEXT", help="voice direction / design instruction")
+    ap.add_argument("--language", choices=["auto", "en", "zh-CN", "zh-HK"], default="auto",
+                    help="target language directive (default: auto from the book)")
     ap.add_argument("--cfg", type=float, default=None,
-                    help="cfg_scale (default: 2 with --instruction, else 1)")
+                    help="cfg_scale (default: 3 with --language, 2 with --instruction, else 1)")
     ap.add_argument("--seed", type=int, default=42, help="base seed (default 42)")
     ap.add_argument("--chunk-chars", type=int, default=9000,
                     help="max characters per request, up to 10000 (default 9000)")
@@ -814,32 +837,50 @@ examples:
         die(f"empty chapter range {first}-{last} (the book has {len(chapters)})")
 
     # ── voice configuration ──
-    if sum(bool(x) for x in (a.voice, a.ref, a.instruction)) > 1:
-        die("choose one voice source: --voice, --ref, or --instruction")
-    if a.save_voice and not (a.ref or a.instruction):
-        die("--save-voice needs --ref or --instruction")
+    if a.voice and a.ref:
+        die("choose one voice source: --voice or --ref, not both")
+    if a.save_voice and not (a.ref or (a.instruction and not a.voice)):
+        die("--save-voice needs --ref or a design --instruction")
     if a.ref and not a.ref_text:
         die("--ref-text is required with --ref (the clip's exact transcript)")
     if not (a.voice or a.ref or a.instruction):
         die("pick a voice so it stays consistent: --voice NAME, "
-            "--ref CLIP --ref-text T, or --instruction TEXT")
+            "--ref CLIP --ref-text T, or --instruction TEXT\n"
+            "       --instruction on its own designs a voice; with --voice/--ref it directs one")
     if a.m4b and not shutil.which("ffmpeg"):
         die("--m4b needs ffmpeg; install it with: brew install ffmpeg")
 
     api_health()
 
-    cfg = a.cfg if a.cfg is not None else (2.0 if a.instruction else 1.0)
+    # ── language ──
+    # There is no language field in the API. A directive in the target language is
+    # the lever, and the model card says the instruction language should match the
+    # text; otherwise Chinese can flip between Mandarin and Cantonese.
+    lang = a.language
+    if lang == "auto":
+        lang = detect_language(" ".join(ch["text"] for ch in chapters))
+    directive = LANG_DIRECTIVE.get(lang, "")
+    composed = " ".join(part for part in (directive, a.instruction) if part)
+    if directive and a.instruction and not re.search(r"[\u3400-\u9fff]", a.instruction):
+        print("note: the instruction is not in Chinese; the model matches the "
+              "instruction language to the text.", file=sys.stderr)
+
+    cfg = a.cfg if a.cfg is not None else (
+        3.0 if directive else (2.0 if a.instruction else 1.0))
+    if directive and cfg < 2:
+        print(f"note: cfg_scale {cfg:g} largely ignores the language directive; "
+              "2-4 is needed.", file=sys.stderr)
     fields: dict[str, str] = {"cfg_scale": f"{cfg:g}", "seed": str(a.seed)}
     if a.split_chars is not None:
         fields["split_chars"] = str(a.split_chars)
-    if a.instruction:
-        fields["instruction"] = a.instruction
+    if composed:
+        fields["instruction"] = composed
 
     # "anchored" marks a design run so caches made before anchoring existed are
     # not silently mixed with the new, consistent audio.
     kind = (f"voice {a.voice}" if a.voice else
             f"reference {os.path.basename(a.ref)}" if a.ref else
-            f"voice design anchored {a.instruction!r}")
+            f"voice design anchored {composed!r}")
     ref_fingerprint = ""
     if a.ref:
         ref_fingerprint = hashlib.sha1(open(a.ref, "rb").read()).hexdigest()
@@ -854,7 +895,7 @@ examples:
         "ref": ref_fingerprint,
         "cfg": cfg,
         "seed": a.seed,
-        "instruction": a.instruction,
+        "instruction": composed or None,
         "split": a.split_chars,
         "chunk": a.chunk_chars,
     }, sort_keys=True).encode()).hexdigest()[:10]
@@ -889,7 +930,7 @@ examples:
             voice_id = reuse
             print(f"reusing anchored voice {voice_id}", file=sys.stderr)
         else:
-            voice_id = anchor_design_voice(fields, chapters, outdir, a.save_voice)
+            voice_id = anchor_design_voice(fields, chapters, outdir, a.save_voice, lang)
     fields["voice_id"] = voice_id
 
     if a.fresh:
